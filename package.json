@@ -1,0 +1,56 @@
+{
+	"name": "n8n-nodes-gcp-pubsub",
+	"version": "0.1.0",
+	"description": "Google GCP pub/sub nodes for n8n",
+	"license": "MIT",
+	"homepage": "https://n8n.io",
+	"keywords": [
+		"n8n-nodes-gcp-pubsub"
+	],
+	"author": {
+		"name": "Experiment78",
+		"email": "experiment78apps@gmail.com"
+	},
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/experiment78-apps/n8n-node-gcp-pubsub.git"
+	},
+	"scripts": {
+		"build": "n8n-node build",
+		"build:watch": "tsc --watch",
+		"dev": "n8n-node dev",
+		"lint": "n8n-node lint",
+		"lint:fix": "n8n-node lint --fix",
+		"release": "n8n-node release",
+		"prepublishOnly": "n8n-node prerelease"
+	},
+	"files": [
+		"dist"
+	],
+	"n8n": {
+		"n8nNodesApiVersion": 1,
+		"strict": true,
+		"credentials": [],
+		"nodes": [
+			"dist/nodes/Example/Example.node.js",
+			"dist/nodes/GCPPubSubTrigger/GCPPubSubTrigger.node.js"
+		]
+	},
+	"devDependencies": {
+		"@n8n/node-cli": "*",
+		"@types/express": "^5.0.6",
+		"eslint": "9.39.4",
+		"n8n-core": "^1.122.18",
+		"n8n-workflow": "^2.13.1",
+		"prettier": "3.8.1",
+		"release-it": "19.2.4",
+		"typescript": "5.9.3"
+	},
+	"peerDependencies": {
+		"n8n-workflow": "*"
+	},
+	"dependencies": {
+		"@google-cloud/pubsub": "^5.3.0",
+		"google-auth-library": "^10.6.2"
+	}
+}
