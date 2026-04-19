@@ -48,7 +48,7 @@ function trimOrUndefined(value: unknown): string | undefined {
 	return trimmed === '' ? undefined : trimmed;
 }
 
-function parseServiceAccountJson(raw: string): CredentialBody & { project_id?: string } {
+export function parseServiceAccountJson(raw: string): CredentialBody & { project_id?: string } {
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(raw);
@@ -172,13 +172,13 @@ function buildOAuth2GoogleAuth(
 	return { googleAuth, projectId };
 }
 
-function normaliseApiEndpoint(value: unknown): string | undefined {
+export function normaliseApiEndpoint(value: unknown): string | undefined {
 	const raw = trimOrUndefined(value);
 	if (!raw) return undefined;
 	return raw.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
 }
 
-function restBaseForApiEndpoint(apiEndpoint: string | undefined): string {
+export function restBaseForApiEndpoint(apiEndpoint: string | undefined): string {
 	if (!apiEndpoint) return DEFAULT_REST_API_BASE;
 	const host = apiEndpoint.replace(/:443$/, '');
 	return `https://${host}/v1`;
@@ -215,12 +215,19 @@ export async function buildPubSubAuth(
 	if (useEmulator) {
 		const emulatorHost =
 			normaliseApiEndpoint(credentials.emulatorHost) ?? 'localhost:8085';
-		process.env.PUBSUB_EMULATOR_HOST = emulatorHost;
+		const [host, portStr] = emulatorHost.split(':');
+		const port = portStr ? Number(portStr) : 8085;
 		const projectId =
 			projectIdOverride ??
 			trimOrUndefined(credentials.projectId) ??
 			EMULATOR_DEFAULT_PROJECT;
-		const pubsub = new PubSub({ projectId, emulatorMode: true });
+		const pubsub = new PubSub({
+			projectId,
+			emulatorMode: true,
+			apiEndpoint: emulatorHost,
+			servicePath: host,
+			port,
+		});
 		return {
 			authClient: buildEmulatorAuthClient(),
 			pubsub,

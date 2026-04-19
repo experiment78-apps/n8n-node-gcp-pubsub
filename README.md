@@ -14,6 +14,7 @@ The two nodes are designed to work together: the trigger receives messages **wit
 - [Quick start](#quick-start)
 - [Trigger output](#trigger-output)
 - [Action node operations](#action-node-operations)
+- [Publish node](#publish-node)
 - [Ack lifecycle and guarantees](#ack-lifecycle-and-guarantees)
 - [IAM roles](#iam-roles)
 - [Troubleshooting](#troubleshooting)
@@ -145,6 +146,29 @@ Items that share a `subscription` (and deadline, for `Extend Ack Deadline`) are 
 
 On success the action node attaches `ok: true`, `status: 200`, `operation`, `subscription` and `ackId` to the item. On failure it raises a `NodeOperationError` pointing at the offending item (respecting the workflow's **Continue on Fail** setting).
 
+The REST helper retries up to 3 times on transient failures (HTTP 408, 429, 5xx, and network errors). `FAILED_PRECONDITION` (expired `ackId`) is never retried — it is reported verbatim so your workflow can branch on it.
+
+## Publish node
+
+The **Google Cloud Pub/Sub Publish** node sends messages to a topic. Useful when a workflow needs to emit events in addition to (or instead of) consuming them.
+
+Fields:
+
+- **Topic** — resource locator (list or short name).
+- **Data Mode** — how the **Data** field is encoded into the Pub/Sub payload:
+  - `JSON (Auto-Serialize)` — objects and arrays are stringified; strings pass through unchanged.
+  - `Text` — sent as a UTF-8 string.
+  - `Binary (Base64)` — decoded from base64 before publish.
+- **Data** — the payload (expressions supported; default `={{ $json }}`).
+- **Attributes** — optional string key/value pairs; Pub/Sub subscription filters can match on these.
+- **Ordering Key** — optional. Requires the subscription to have **Enable Message Ordering** turned on to take effect.
+- **Options**:
+  - `Batch Max Messages` (default 100) — publisher buffer size.
+  - `Batch Max Bytes` (default 1 MiB) — publisher byte buffer.
+  - `Batch Max Milliseconds` (default 10) — max time a partial batch waits before flush.
+
+Each input item becomes one published message. The node attaches `_publish: { topic, messageId, ok }` to each output item. It flushes the batch and closes the Pub/Sub client between executions, so you do not need to worry about lingering connections.
+
 ## Ack lifecycle and guarantees
 
 - **Delivery guarantee**: at-least-once. Duplicates can occur (trigger restart mid-processing, slow consumer exceeding `maxExtensionMinutes`, Pub/Sub redelivery). Design your workflow to be idempotent.
@@ -184,6 +208,16 @@ Check that the subscription exists and that the service account has `roles/pubsu
 **Messages show up again after processing**
 Either the action node did not run (check your error branch wiring) or the ack call failed (inspect the item's `ok`, `status`, and `message` fields). Remember: delivery is at-least-once.
 
+## Running behind a corporate proxy
+
+Both transports used by these nodes honour standard proxy environment variables on the host that runs n8n:
+
+- REST ack calls (gaxios): `HTTPS_PROXY`, `HTTP_PROXY`, and `NO_PROXY`.
+- Streaming pull (gRPC): the same variables, plus `grpc.http_proxy` for the underlying gRPC client. If gRPC traffic does not reach Google, set `grpc.http_proxy=http://user:pass@proxy.example.com:3128` as well.
+- Corporate TLS interception: point `NODE_EXTRA_CA_CERTS` at a PEM bundle that includes your internal root CA so both gaxios and gRPC can validate the proxy's certificate.
+
+A dedicated credential-level proxy field is not exposed yet; it needs per-call `http.Agent` wiring on the gaxios side *and* a custom gRPC channel on the Pub/Sub client side. Until that lands, the environment-variable approach is the supported path.
+
 ## Development
 
 ```bash
@@ -192,17 +226,22 @@ npm run dev           # hot-reload n8n with the nodes loaded
 npm run build         # build into dist/
 npm run lint          # n8n community-node lint + eslint
 npm run lint:fix      # auto-fix where possible
+npm test              # jest unit tests
+npm run test:watch    # jest in watch mode
 ```
 
 Code layout:
 
 - [`credentials/GcpPubSubApi.credentials.ts`](credentials/GcpPubSubApi.credentials.ts) — service-account credential (key / JSON / ADC sub-modes).
 - [`credentials/GcpPubSubOAuth2Api.credentials.ts`](credentials/GcpPubSubOAuth2Api.credentials.ts) — OAuth2 credential preset for Google + Pub/Sub scope.
-- [`nodes/GcpPubSubTrigger/GcpPubSubTrigger.node.ts`](nodes/GcpPubSubTrigger/GcpPubSubTrigger.node.ts) — streaming-pull trigger.
-- [`nodes/GcpPubSubAction/GcpPubSubAction.node.ts`](nodes/GcpPubSubAction/GcpPubSubAction.node.ts) — ack/nack/extend action.
+- [`nodes/GcpPubSubTrigger/`](nodes/GcpPubSubTrigger) — versioned streaming-pull trigger (`GcpPubSubTrigger.node.ts` wrapper + `v1/GcpPubSubTriggerV1.node.ts`).
+- [`nodes/GcpPubSubAction/`](nodes/GcpPubSubAction) — versioned ack/nack/extend action.
+- [`nodes/GcpPubSubPublish/`](nodes/GcpPubSubPublish) — versioned publisher node with batching.
 - [`nodes/shared/auth.ts`](nodes/shared/auth.ts) — `buildPubSubAuth` dispatcher that returns `{ authClient, pubsub, projectId, restApiBase }` for all four auth modes, and handles emulator / regional-endpoint routing.
-- [`nodes/shared/pubsubRest.ts`](nodes/shared/pubsubRest.ts) — thin REST wrapper around `:acknowledge` and `:modifyAckDeadline`, parameterised by `apiBase` so it follows the credential's endpoint setting.
-- [`nodes/shared/listSearch.ts`](nodes/shared/listSearch.ts) — `searchTopics` / `searchSubscriptions` helpers that power the resource-locator dropdowns on both nodes.
+- [`nodes/shared/pubsubRest.ts`](nodes/shared/pubsubRest.ts) — thin REST wrapper around `:acknowledge` and `:modifyAckDeadline` with gaxios retry (skipping `FAILED_PRECONDITION`), parameterised by `apiBase` so it follows the credential's endpoint setting.
+- [`nodes/shared/listSearch.ts`](nodes/shared/listSearch.ts) — `searchTopics` / `searchSubscriptions` helpers that power the resource-locator dropdowns on all three nodes.
+- [`nodes/shared/credentialTest.ts`](nodes/shared/credentialTest.ts) — shared `pubSubCredentialTest` used by every node's `methods.credentialTest`.
+- [`nodes/shared/__tests__/`](nodes/shared/__tests__) — jest unit tests for `auth.ts`, `pubsubRest.ts` and `listSearch.ts`.
 
 The project depends on `@google-cloud/pubsub` (for streaming pull) and `google-auth-library` (for signing JWTs used by the REST ack calls). These external runtime dependencies mean the package is not eligible for the "n8n Cloud verified" status today; self-hosted n8n instances install it without issue.
 

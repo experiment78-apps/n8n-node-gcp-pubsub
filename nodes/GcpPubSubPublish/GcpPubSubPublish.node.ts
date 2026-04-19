@@ -1,22 +1,21 @@
 import type { INodeTypeBaseDescription, IVersionedNodeType } from 'n8n-workflow';
 import { VersionedNodeType } from 'n8n-workflow';
 
-import { GcpPubSubTriggerV1 } from './v1/GcpPubSubTriggerV1.node';
+import { GcpPubSubPublishV1 } from './v1/GcpPubSubPublishV1.node';
 
-export class GCPPubSubTrigger extends VersionedNodeType {
+export class GCPPubSubPublish extends VersionedNodeType {
 	constructor() {
 		const baseDescription: INodeTypeBaseDescription = {
-			displayName: 'Google Cloud Pub/Sub Trigger',
-			name: 'gcpPubSubTrigger',
+			displayName: 'Google Cloud Pub/Sub Publish',
+			name: 'gcpPubSubPublish',
 			icon: 'file:gcpPubSub.svg',
-			group: ['trigger'],
-			description:
-				'Starts a workflow when a message is received on a Google Cloud Pub/Sub topic',
+			group: ['output'],
+			description: 'Publishes messages to a Google Cloud Pub/Sub topic',
 			defaultVersion: 1,
 		};
 
 		const nodeVersions: IVersionedNodeType['nodeVersions'] = {
-			1: new GcpPubSubTriggerV1(),
+			1: new GcpPubSubPublishV1(),
 		};
 
 		super(nodeVersions, baseDescription);

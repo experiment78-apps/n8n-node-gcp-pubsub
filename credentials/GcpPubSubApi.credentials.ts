@@ -4,7 +4,7 @@ import type {
 	INodeProperties,
 } from 'n8n-workflow';
 
-// eslint-disable-next-line @n8n/community-nodes/credential-test-required -- Declarative HTTP test cannot sign the JWT needed for a service-account credential; the credential is validated at run time by the nodes that use it.
+// eslint-disable-next-line @n8n/community-nodes/credential-test-required -- The imperative credentialTest (methods.credentialTest.pubSubCredentialTest) is defined on each node's versioned implementation; the rule's static analysis only sees the top-level VersionedNodeType wrapper and misses it.
 export class GcpPubSubApi implements ICredentialType {
 	name = 'gcpPubSubApi';
 
