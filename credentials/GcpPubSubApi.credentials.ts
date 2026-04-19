@@ -95,5 +95,34 @@ export class GcpPubSubApi implements ICredentialType {
 			description:
 				'Default Google Cloud project ID. Optional when using Service Account JSON (inferred from project_id) or Application Default Credentials (inferred from the environment). Can be overridden per node.',
 		},
+		{
+			displayName: 'API Endpoint (Regional)',
+			name: 'apiEndpoint',
+			type: 'string',
+			default: '',
+			placeholder: 'europe-west1-pubsub.googleapis.com:443',
+			description:
+				'Regional Pub/Sub endpoint to use (host:port). Leave blank for the default global endpoint. Common values: us-east1-pubsub.googleapis.com:443, europe-west1-pubsub.googleapis.com:443. Ignored when "Use Pub/Sub Emulator" is on.',
+		},
+		{
+			displayName: 'Use Pub/Sub Emulator',
+			name: 'useEmulator',
+			type: 'boolean',
+			default: false,
+			description:
+				'Whether to target a local Pub/Sub emulator (gcloud beta emulators pubsub) instead of the real Pub/Sub service. Credentials are ignored when this is on.',
+		},
+		{
+			displayName: 'Emulator Host',
+			name: 'emulatorHost',
+			type: 'string',
+			default: 'localhost:8085',
+			description: 'host:port the Pub/Sub emulator is listening on.',
+			displayOptions: {
+				show: {
+					useEmulator: [true],
+				},
+			},
+		},
 	];
 }

@@ -1,6 +1,6 @@
 import type { AuthClient } from 'google-auth-library';
 
-const PUBSUB_API = 'https://pubsub.googleapis.com/v1';
+const DEFAULT_PUBSUB_API = 'https://pubsub.googleapis.com/v1';
 
 /**
  * Normalises a subscription argument into the canonical
@@ -34,8 +34,9 @@ async function postToSubscription(
 	subscription: string,
 	action: 'acknowledge' | 'modifyAckDeadline',
 	body: Record<string, unknown>,
+	apiBase: string = DEFAULT_PUBSUB_API,
 ): Promise<PubsubRequestResult> {
-	const url = `${PUBSUB_API}/${subscription}:${action}`;
+	const url = `${apiBase.replace(/\/+$/, '')}/${subscription}:${action}`;
 	try {
 		const res = await authClient.request<unknown>({
 			method: 'POST',
@@ -81,8 +82,15 @@ export async function acknowledge(
 	authClient: AuthClient,
 	subscription: string,
 	ackIds: string[],
+	apiBase?: string,
 ): Promise<AcknowledgeResult> {
-	const result = await postToSubscription(authClient, subscription, 'acknowledge', { ackIds });
+	const result = await postToSubscription(
+		authClient,
+		subscription,
+		'acknowledge',
+		{ ackIds },
+		apiBase,
+	);
 	return { subscription, ackIds, ...result };
 }
 
@@ -91,11 +99,15 @@ export async function modifyAckDeadline(
 	subscription: string,
 	ackIds: string[],
 	ackDeadlineSeconds: number,
+	apiBase?: string,
 ): Promise<AcknowledgeResult> {
-	const result = await postToSubscription(authClient, subscription, 'modifyAckDeadline', {
-		ackIds,
-		ackDeadlineSeconds,
-	});
+	const result = await postToSubscription(
+		authClient,
+		subscription,
+		'modifyAckDeadline',
+		{ ackIds, ackDeadlineSeconds },
+		apiBase,
+	);
 	return { subscription, ackIds, ...result };
 }
 

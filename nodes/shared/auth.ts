@@ -1,9 +1,11 @@
 import { PubSub } from '@google-cloud/pubsub';
+import { gaxios, GoogleAuth, OAuth2Client } from 'google-auth-library';
 import type { AuthClient, CredentialBody } from 'google-auth-library';
-import { GoogleAuth, OAuth2Client } from 'google-auth-library';
 import type { ICredentialDataDecryptedObject } from 'n8n-workflow';
 
 const PUBSUB_SCOPES = ['https://www.googleapis.com/auth/pubsub'];
+const DEFAULT_REST_API_BASE = 'https://pubsub.googleapis.com/v1';
+const EMULATOR_DEFAULT_PROJECT = 'emulator-project';
 
 export type Authentication = 'serviceAccount' | 'oAuth2';
 export type ServiceAccountAuthType =
@@ -15,6 +17,7 @@ export interface PubSubAuthBundle {
 	authClient: AuthClient;
 	pubsub: PubSub;
 	projectId: string;
+	restApiBase: string;
 }
 
 export interface CredentialLoader {
@@ -169,23 +172,74 @@ function buildOAuth2GoogleAuth(
 	return { googleAuth, projectId };
 }
 
+function normaliseApiEndpoint(value: unknown): string | undefined {
+	const raw = trimOrUndefined(value);
+	if (!raw) return undefined;
+	return raw.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+}
+
+function restBaseForApiEndpoint(apiEndpoint: string | undefined): string {
+	if (!apiEndpoint) return DEFAULT_REST_API_BASE;
+	const host = apiEndpoint.replace(/:443$/, '');
+	return `https://${host}/v1`;
+}
+
+/**
+ * Builds a stub AuthClient that forwards `.request()` to gaxios unauthenticated.
+ * Used only when the credential targets the Pub/Sub emulator (which does not
+ * require authentication). The Pub/Sub client library itself is put into
+ * emulatorMode, which short-circuits gRPC auth.
+ */
+function buildEmulatorAuthClient(): AuthClient {
+	return {
+		async request(opts: Parameters<AuthClient['request']>[0]) {
+			return gaxios.request({ validateStatus: () => true, ...opts });
+		},
+	} as unknown as AuthClient;
+}
+
 export async function buildPubSubAuth(
 	ctx: CredentialLoader,
 	opts: { authentication: Authentication; projectIdOverride?: string },
 ): Promise<PubSubAuthBundle> {
 	const projectIdOverride = trimOrUndefined(opts.projectIdOverride);
 
+	const credentials =
+		opts.authentication === 'oAuth2'
+			? await ctx.getCredentials('gcpPubSubOAuth2Api')
+			: await ctx.getCredentials('gcpPubSubApi');
+
+	const useEmulator = credentials.useEmulator === true;
+	const apiEndpoint = normaliseApiEndpoint(credentials.apiEndpoint);
+
+	if (useEmulator) {
+		const emulatorHost =
+			normaliseApiEndpoint(credentials.emulatorHost) ?? 'localhost:8085';
+		process.env.PUBSUB_EMULATOR_HOST = emulatorHost;
+		const projectId =
+			projectIdOverride ??
+			trimOrUndefined(credentials.projectId) ??
+			EMULATOR_DEFAULT_PROJECT;
+		const pubsub = new PubSub({ projectId, emulatorMode: true });
+		return {
+			authClient: buildEmulatorAuthClient(),
+			pubsub,
+			projectId,
+			restApiBase: `http://${emulatorHost}/v1`,
+		};
+	}
+
 	let googleAuth: GoogleAuth;
 	let projectId: string;
 	if (opts.authentication === 'oAuth2') {
-		const credentials = await ctx.getCredentials('gcpPubSubOAuth2Api');
 		({ googleAuth, projectId } = buildOAuth2GoogleAuth(credentials, projectIdOverride));
 	} else {
-		const credentials = await ctx.getCredentials('gcpPubSubApi');
 		({ googleAuth, projectId } = await buildServiceAccountAuth(credentials, projectIdOverride));
 	}
 
 	const authClient = (await googleAuth.getClient()) as AuthClient;
-	const pubsub = new PubSub({ projectId, auth: googleAuth });
-	return { authClient, pubsub, projectId };
+	const pubsub = apiEndpoint
+		? new PubSub({ projectId, auth: googleAuth, apiEndpoint })
+		: new PubSub({ projectId, auth: googleAuth });
+	return { authClient, pubsub, projectId, restApiBase: restBaseForApiEndpoint(apiEndpoint) };
 }

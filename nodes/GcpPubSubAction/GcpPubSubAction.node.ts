@@ -1,13 +1,16 @@
 import type {
 	IDataObject,
 	IExecuteFunctions,
+	ILoadOptionsFunctions,
 	INodeExecutionData,
+	INodeListSearchResult,
 	INodeType,
 	INodeTypeDescription,
 } from 'n8n-workflow';
 import { NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
 
 import { buildPubSubAuth, type Authentication } from '../shared/auth';
+import { searchSubscriptions } from '../shared/listSearch';
 import {
 	acknowledge,
 	isAckIdExpiredError,
@@ -107,10 +110,39 @@ export class GCPPubSubAction implements INodeType {
 			{
 				displayName: 'Subscription',
 				name: 'subscription',
-				type: 'string',
-				default: '={{$json._pubsub.subscription}}',
-				description: 'Full subscription resource name (projects/{project}/subscriptions/{sub}) or a short name. Defaults to the value emitted by the trigger.',
+				type: 'resourceLocator',
+				default: { mode: 'id', value: '={{$json._pubsub.subscription}}' },
 				required: true,
+				description:
+					'Pub/Sub subscription to operate on. Defaults to the value emitted by the trigger.',
+				modes: [
+					{
+						displayName: 'From List',
+						name: 'list',
+						type: 'list',
+						typeOptions: {
+							searchListMethod: 'searchSubscriptions',
+							searchable: true,
+						},
+					},
+					{
+						displayName: 'By Name',
+						name: 'id',
+						type: 'string',
+						placeholder: 'my-subscription',
+						validation: [
+							{
+								type: 'regex',
+								properties: {
+									regex:
+										'^=.*|^[A-Za-z][A-Za-z0-9._~%+\\-]{2,254}$|^projects/[^/]+/subscriptions/[^/]+$',
+									errorMessage:
+										'Enter a short subscription name (3-255 chars), a full resource path (projects/.../subscriptions/...), or an expression.',
+								},
+							},
+						],
+					},
+				],
 			},
 			{
 				displayName: 'Ack ID',
@@ -160,6 +192,18 @@ export class GCPPubSubAction implements INodeType {
 		],
 	};
 
+	methods = {
+		listSearch: {
+			async searchSubscriptions(
+				this: ILoadOptionsFunctions,
+				filter?: string,
+				paginationToken?: string,
+			): Promise<INodeListSearchResult> {
+				return await searchSubscriptions.call(this, filter, paginationToken);
+			},
+		},
+	};
+
 	async execute(this: IExecuteFunctions): Promise<INodeExecutionData[][]> {
 		const items = this.getInputData();
 		if (items.length === 0) {
@@ -179,8 +223,13 @@ export class GCPPubSubAction implements INodeType {
 
 		let authClient;
 		let resolvedProjectId: string;
+		let restApiBase: string;
 		try {
-			({ authClient, projectId: resolvedProjectId } = await buildPubSubAuth(this, {
+			({
+				authClient,
+				projectId: resolvedProjectId,
+				restApiBase,
+			} = await buildPubSubAuth(this, {
 				authentication,
 				projectIdOverride: nodeProjectId || undefined,
 			}));
@@ -202,7 +251,8 @@ export class GCPPubSubAction implements INodeType {
 
 		for (let i = 0; i < items.length; i++) {
 			try {
-				const subscriptionParam = (this.getNodeParameter('subscription', i) as string) ?? '';
+				const subscriptionParam =
+					(this.getNodeParameter('subscription', i, '', { extractValue: true }) as string) ?? '';
 				const ackId = ((this.getNodeParameter('ackId', i) as string) ?? '').trim();
 				const projectIdParam = ((this.getNodeParameter('projectId', i, '') as string) ?? '').trim();
 				const projectId = projectIdParam || resolvedProjectId;
@@ -264,10 +314,10 @@ export class GCPPubSubAction implements INodeType {
 			const ackIds = group.map((p) => p.ackId);
 			let result: AcknowledgeResult;
 			if (operation === 'ack') {
-				result = await acknowledge(authClient, subscription, ackIds);
+				result = await acknowledge(authClient, subscription, ackIds, restApiBase);
 			} else {
 				const seconds = deadline ?? 0;
-				result = await modifyAckDeadline(authClient, subscription, ackIds, seconds);
+				result = await modifyAckDeadline(authClient, subscription, ackIds, seconds, restApiBase);
 			}
 
 			for (const plan of group) {

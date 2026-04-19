@@ -1,7 +1,9 @@
-import type { Message, Subscription } from '@google-cloud/pubsub';
+import type { CreateSubscriptionOptions, Message, Subscription } from '@google-cloud/pubsub';
 import { Duration } from '@google-cloud/pubsub';
 import type {
 	IDataObject,
+	ILoadOptionsFunctions,
+	INodeListSearchResult,
 	INodeType,
 	INodeTypeDescription,
 	ITriggerFunctions,
@@ -10,6 +12,7 @@ import type {
 import { NodeConnectionTypes, NodeOperationError } from 'n8n-workflow';
 
 import { buildPubSubAuth, type Authentication } from '../shared/auth';
+import { searchSubscriptions, searchTopics } from '../shared/listSearch';
 
 const ALREADY_EXISTS_CODE = 6;
 
@@ -85,20 +88,73 @@ export class GCPPubSubTrigger implements INodeType {
 			{
 				displayName: 'Topic',
 				name: 'topic',
-				type: 'string',
-				default: '',
-				placeholder: 'my-topic',
-				description: 'Name of the Pub/Sub topic to listen to (short name, not a full resource path)',
+				type: 'resourceLocator',
+				default: { mode: 'list', value: '' },
 				required: true,
+				description: 'Pub/Sub topic to listen to. Pick from the list or type a short name.',
+				modes: [
+					{
+						displayName: 'From List',
+						name: 'list',
+						type: 'list',
+						typeOptions: {
+							searchListMethod: 'searchTopics',
+							searchable: true,
+						},
+					},
+					{
+						displayName: 'By Name',
+						name: 'id',
+						type: 'string',
+						placeholder: 'my-topic',
+						validation: [
+							{
+								type: 'regex',
+								properties: {
+									regex: '^[A-Za-z][A-Za-z0-9._~%+\\-]{2,254}$|^projects/[^/]+/topics/[^/]+$',
+									errorMessage:
+										'Enter a short topic name (3-255 chars) or a full resource path (projects/.../topics/...)',
+								},
+							},
+						],
+					},
+				],
 			},
 			{
 				displayName: 'Subscription',
 				name: 'subscription',
-				type: 'string',
-				default: '',
-				placeholder: 'my-subscription',
-				description: 'Name of the Pub/Sub subscription (short name). If \'Auto-Create Subscription\' is enabled, it will be created on the topic if missing.',
+				type: 'resourceLocator',
+				default: { mode: 'list', value: '' },
 				required: true,
+				description:
+					"Pub/Sub subscription. Pick an existing one, or type a new name with 'Auto-Create Subscription' on to create it on the topic.",
+				modes: [
+					{
+						displayName: 'From List',
+						name: 'list',
+						type: 'list',
+						typeOptions: {
+							searchListMethod: 'searchSubscriptions',
+							searchable: true,
+						},
+					},
+					{
+						displayName: 'By Name',
+						name: 'id',
+						type: 'string',
+						placeholder: 'my-subscription',
+						validation: [
+							{
+								type: 'regex',
+								properties: {
+									regex: '^[A-Za-z][A-Za-z0-9._~%+\\-]{2,254}$|^projects/[^/]+/subscriptions/[^/]+$',
+									errorMessage:
+										'Enter a short subscription name (3-255 chars) or a full resource path (projects/.../subscriptions/...)',
+								},
+							},
+						],
+					},
+				],
 			},
 			{
 				displayName: 'Decode JSON',
@@ -106,6 +162,69 @@ export class GCPPubSubTrigger implements INodeType {
 				type: 'boolean',
 				default: false,
 				description: 'Whether to parse the message data as JSON. On parse failure the raw string is returned under data and jsonDecodeFailed is set to true.',
+			},
+			{
+				displayName: 'Subscription Settings (On Create)',
+				name: 'subscriptionCreateOptions',
+				type: 'collection',
+				placeholder: 'Add Subscription Setting',
+				default: {},
+				description:
+					'Settings applied when auto-creating a subscription. Ignored if the subscription already exists; change them via the Google Cloud Console to edit a live subscription.',
+				options: [
+					{
+						displayName: 'Dead-Letter Max Delivery Attempts',
+						name: 'deadLetterMaxDeliveryAttempts',
+						type: 'number',
+						typeOptions: { minValue: 5, maxValue: 100 },
+						default: 5,
+						description:
+							'Number of delivery attempts before Pub/Sub forwards the message to the dead-letter topic. Applied only when Dead-Letter Topic is set.',
+					},
+					{
+						displayName: 'Dead-Letter Topic',
+						name: 'deadLetterTopic',
+						type: 'string',
+						default: '',
+						placeholder: 'my-dlq-topic',
+						description:
+							'Topic to forward undeliverable messages to. Short name or full projects/{project}/topics/{name}. The DLQ topic must already exist and grant roles/pubsub.publisher to the Pub/Sub service agent.',
+					},
+					{
+						displayName: 'Enable Message Ordering',
+						name: 'enableMessageOrdering',
+						type: 'boolean',
+						default: false,
+						description:
+							'Whether Pub/Sub should deliver messages with the same orderingKey in order. Also makes the subscriber honour ordering.',
+					},
+					{
+						displayName: 'Filter',
+						name: 'filter',
+						type: 'string',
+						default: '',
+						placeholder: 'attributes.type = "order.created"',
+						description:
+							'Server-side subscription filter. Only messages matching this expression are delivered. See https://cloud.google.com/pubsub/docs/filtering.',
+					},
+					{
+						displayName: 'Message Retention (Hours)',
+						name: 'messageRetentionHours',
+						type: 'number',
+						typeOptions: { minValue: 1, maxValue: 168 },
+						default: 168,
+						description:
+							'How long Pub/Sub retains unacknowledged messages (1-168 hours; default 7 days)',
+					},
+					{
+						displayName: 'Retain Acked Messages',
+						name: 'retainAckedMessages',
+						type: 'boolean',
+						default: false,
+						description:
+							'Whether to keep acknowledged messages for the retention duration (useful for seeking back in time)',
+					},
+				],
 			},
 			{
 				displayName: 'Options',
@@ -158,14 +277,37 @@ export class GCPPubSubTrigger implements INodeType {
 		],
 	};
 
+	methods = {
+		listSearch: {
+			async searchTopics(
+				this: ILoadOptionsFunctions,
+				filter?: string,
+				paginationToken?: string,
+			): Promise<INodeListSearchResult> {
+				return await searchTopics.call(this, filter, paginationToken);
+			},
+			async searchSubscriptions(
+				this: ILoadOptionsFunctions,
+				filter?: string,
+				paginationToken?: string,
+			): Promise<INodeListSearchResult> {
+				return await searchSubscriptions.call(this, filter, paginationToken);
+			},
+		},
+	};
+
 	async trigger(this: ITriggerFunctions): Promise<ITriggerResponse> {
 		const authentication = this.getNodeParameter(
 			'authentication',
 			'serviceAccount',
 		) as Authentication;
 		const projectIdParam = (this.getNodeParameter('projectId', '') as string).trim();
-		const topic = (this.getNodeParameter('topic') as string).trim();
-		const subscriptionName = (this.getNodeParameter('subscription') as string).trim();
+		const topic = (
+			this.getNodeParameter('topic', '', { extractValue: true }) as string
+		).trim();
+		const subscriptionName = (
+			this.getNodeParameter('subscription', '', { extractValue: true }) as string
+		).trim();
 		const decodeJSON = this.getNodeParameter('decodeJSON') as boolean;
 		const options = this.getNodeParameter('options', {}) as {
 			autoCreateSubscription?: boolean;
@@ -173,6 +315,14 @@ export class GCPPubSubTrigger implements INodeType {
 			maxExtensionMinutes?: number;
 			maxMessages?: number;
 			maxBytes?: number;
+		};
+		const createOptions = this.getNodeParameter('subscriptionCreateOptions', {}) as {
+			filter?: string;
+			enableMessageOrdering?: boolean;
+			retainAckedMessages?: boolean;
+			messageRetentionHours?: number;
+			deadLetterTopic?: string;
+			deadLetterMaxDeliveryAttempts?: number;
 		};
 
 		if (!topic) {
@@ -201,12 +351,50 @@ export class GCPPubSubTrigger implements INodeType {
 		const maxExtensionMinutes = options.maxExtensionMinutes ?? 10;
 		const maxMessages = options.maxMessages ?? 100;
 		const maxBytes = options.maxBytes ?? 100 * 1024 * 1024;
+		const enableMessageOrdering = createOptions.enableMessageOrdering === true;
+
+		const topicShortOrFull = topic;
+		const subscriptionShortOrFull = subscriptionName;
+		const shortTopic = topicShortOrFull.startsWith('projects/')
+			? topicShortOrFull.split('/').pop() ?? topicShortOrFull
+			: topicShortOrFull;
+		const shortSubscription = subscriptionShortOrFull.startsWith('projects/')
+			? subscriptionShortOrFull.split('/').pop() ?? subscriptionShortOrFull
+			: subscriptionShortOrFull;
 
 		if (autoCreate) {
+			const subscriptionCreateOptions: CreateSubscriptionOptions = {
+				ackDeadlineSeconds,
+			};
+			if (createOptions.filter && createOptions.filter.trim() !== '') {
+				subscriptionCreateOptions.filter = createOptions.filter.trim();
+			}
+			if (enableMessageOrdering) {
+				subscriptionCreateOptions.enableMessageOrdering = true;
+			}
+			if (createOptions.retainAckedMessages === true) {
+				subscriptionCreateOptions.retainAckedMessages = true;
+			}
+			if (typeof createOptions.messageRetentionHours === 'number') {
+				subscriptionCreateOptions.messageRetentionDuration = Duration.from({
+					minutes: createOptions.messageRetentionHours * 60,
+				});
+			}
+			const dlqRaw = createOptions.deadLetterTopic?.trim();
+			if (dlqRaw) {
+				const dlqFullName = dlqRaw.startsWith('projects/')
+					? dlqRaw
+					: `projects/${projectId}/topics/${dlqRaw}`;
+				subscriptionCreateOptions.deadLetterPolicy = {
+					deadLetterTopic: dlqFullName,
+					maxDeliveryAttempts: createOptions.deadLetterMaxDeliveryAttempts ?? 5,
+				};
+			}
+
 			try {
 				await pubsub
-					.topic(topic)
-					.createSubscription(subscriptionName, { ackDeadlineSeconds });
+					.topic(shortTopic)
+					.createSubscription(shortSubscription, subscriptionCreateOptions);
 			} catch (error) {
 				if (!isAlreadyExistsError(error)) {
 					throw error;
@@ -214,15 +402,16 @@ export class GCPPubSubTrigger implements INodeType {
 			}
 		}
 
-		const subscription: Subscription = pubsub.subscription(subscriptionName, {
+		const subscription: Subscription = pubsub.subscription(shortSubscription, {
 			flowControl: {
 				maxMessages,
 				maxBytes,
 			},
 			maxExtensionTime: Duration.from({ minutes: maxExtensionMinutes }),
+			...(enableMessageOrdering ? { enableMessageOrdering: true } : {}),
 		});
 
-		const fullSubscriptionName = `projects/${projectId}/subscriptions/${subscriptionName}`;
+		const fullSubscriptionName = `projects/${projectId}/subscriptions/${shortSubscription}`;
 
 		const onMessage = (message: Message) => {
 			const rawData = message.data.toString('utf-8');

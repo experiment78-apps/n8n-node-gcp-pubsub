@@ -48,6 +48,11 @@ Pick one **Auth Method**:
 
 **Project ID** on this credential is optional; if blank it is inferred from the pasted JSON (Service Account JSON mode) or from ADC (`auth.getProjectId()`). Each node can still override it.
 
+Both the service-account and OAuth2 credentials also expose two deployment-level toggles:
+
+- **API Endpoint (Regional)** — routes all Pub/Sub traffic through a regional endpoint instead of the default global one. Useful for data-residency and latency. Leave blank for the default `pubsub.googleapis.com:443`. Example values: `us-east1-pubsub.googleapis.com:443`, `europe-west1-pubsub.googleapis.com:443`. See [Pub/Sub regional endpoints](https://cloud.google.com/pubsub/docs/reference/service_apis_overview#regional_endpoints).
+- **Use Pub/Sub Emulator** — targets a local emulator (`gcloud beta emulators pubsub start`) instead of the real service. When on, auth is skipped and all traffic (streaming pull and REST acks) goes to the **Emulator Host** (default `localhost:8085`). Not available on n8n Cloud.
+
 ### Google Cloud Pub/Sub OAuth2 API
 
 Use this when you want the nodes to act on behalf of a human Google user (for example a developer testing a workflow against their own subscriptions) rather than a machine identity.
@@ -72,11 +77,12 @@ flowchart LR
 ```
 
 1. Add a **Google Cloud Pub/Sub Trigger** node.
-2. Fill in **Topic**, **Subscription**, and (optionally) override **Project ID**.
-3. Connect it to a **Split Out** node if your workflow expects one item per message.
-4. Process messages with any n8n nodes you like.
-5. On the success branch, add a **Google Cloud Pub/Sub Action** node with **Operation = Acknowledge**. Its defaults already reference `{{$json.ackId}}` and `{{$json._pubsub.subscription}}`, so no further configuration is required.
-6. On the error branch, add another action node with **Operation = Nack (Return Immediately)** so Pub/Sub redelivers the message.
+2. Pick **Topic** and **Subscription** from the dropdowns (list-search). Switch either to **By Name** to type a short name or paste a full resource path — useful for expressions and for creating a new subscription on the fly (with **Auto-Create Subscription** on).
+3. Optionally override **Project ID**.
+4. Connect it to a **Split Out** node if your workflow expects one item per message.
+5. Process messages with any n8n nodes you like.
+6. On the success branch, add a **Google Cloud Pub/Sub Action** node with **Operation = Acknowledge**. Its defaults already reference `{{$json.ackId}}` and `{{$json._pubsub.subscription}}`, so no further configuration is required.
+7. On the error branch, add another action node with **Operation = Nack (Return Immediately)** so Pub/Sub redelivers the message.
 
 If a workflow run ends without reaching either branch (e.g. the n8n instance restarts), Pub/Sub will automatically redeliver once the ack deadline expires.
 
@@ -106,6 +112,8 @@ Enable **Decode JSON** on the trigger to have `data` automatically `JSON.parse`d
 
 ### Trigger options
 
+Runtime options (always apply):
+
 | Option | Default | Purpose |
 |---|---|---|
 | Auto-Create Subscription | on | Create the subscription on the topic if it doesn't exist. Turn off to fail fast if misconfigured. |
@@ -113,6 +121,17 @@ Enable **Decode JSON** on the trigger to have `data` automatically `JSON.parse`d
 | Max Extension (Minutes) | 10 | How long the client keeps extending the ack deadline while waiting for the ack. Set higher than the slowest expected workflow run. |
 | Max Outstanding Messages | 100 | Flow control: cap on unacked messages held in memory. |
 | Max Outstanding Bytes | 100 MiB | Flow control: cap on cumulative size of unacked messages. |
+
+Subscription Settings (on create) — only applied when **Auto-Create Subscription** is on and the subscription does not yet exist. Pub/Sub silently ignores these for existing subscriptions; edit them in the Google Cloud Console to change a live subscription.
+
+| Setting | Default | Purpose |
+|---|---|---|
+| Filter | — | Server-side [subscription filter](https://cloud.google.com/pubsub/docs/filtering) (for example `attributes.type = "order.created"`). Non-matching messages are dropped before delivery. |
+| Enable Message Ordering | off | When on, Pub/Sub delivers messages sharing the same `orderingKey` in publish order, and the subscriber honours ordering. |
+| Retain Acked Messages | off | Keep acknowledged messages for the retention duration to allow seek-to-time replays. |
+| Message Retention (Hours) | 168 (7 days) | How long Pub/Sub retains unacked (and, if enabled, acked) messages. Range 1–168. |
+| Dead-Letter Topic | — | Short name or full `projects/{project}/topics/{name}`. Undeliverable messages are forwarded here once `Dead-Letter Max Delivery Attempts` is exceeded. The DLQ topic must already exist and grant `roles/pubsub.publisher` to the Pub/Sub service agent `service-{project-number}@gcp-sa-pubsub.iam.gserviceaccount.com`. |
+| Dead-Letter Max Delivery Attempts | 5 | Number of delivery attempts (5–100) before a message is routed to the DLQ. Applied only when a DLQ topic is set. |
 
 ## Action node operations
 
@@ -181,8 +200,9 @@ Code layout:
 - [`credentials/GcpPubSubOAuth2Api.credentials.ts`](credentials/GcpPubSubOAuth2Api.credentials.ts) — OAuth2 credential preset for Google + Pub/Sub scope.
 - [`nodes/GcpPubSubTrigger/GcpPubSubTrigger.node.ts`](nodes/GcpPubSubTrigger/GcpPubSubTrigger.node.ts) — streaming-pull trigger.
 - [`nodes/GcpPubSubAction/GcpPubSubAction.node.ts`](nodes/GcpPubSubAction/GcpPubSubAction.node.ts) — ack/nack/extend action.
-- [`nodes/shared/auth.ts`](nodes/shared/auth.ts) — `buildPubSubAuth` dispatcher that returns `{ authClient, pubsub, projectId }` for all four auth modes.
-- [`nodes/shared/pubsubRest.ts`](nodes/shared/pubsubRest.ts) — thin REST wrapper around `:acknowledge` and `:modifyAckDeadline`.
+- [`nodes/shared/auth.ts`](nodes/shared/auth.ts) — `buildPubSubAuth` dispatcher that returns `{ authClient, pubsub, projectId, restApiBase }` for all four auth modes, and handles emulator / regional-endpoint routing.
+- [`nodes/shared/pubsubRest.ts`](nodes/shared/pubsubRest.ts) — thin REST wrapper around `:acknowledge` and `:modifyAckDeadline`, parameterised by `apiBase` so it follows the credential's endpoint setting.
+- [`nodes/shared/listSearch.ts`](nodes/shared/listSearch.ts) — `searchTopics` / `searchSubscriptions` helpers that power the resource-locator dropdowns on both nodes.
 
 The project depends on `@google-cloud/pubsub` (for streaming pull) and `google-auth-library` (for signing JWTs used by the REST ack calls). These external runtime dependencies mean the package is not eligible for the "n8n Cloud verified" status today; self-hosted n8n instances install it without issue.
 
