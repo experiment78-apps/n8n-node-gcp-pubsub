@@ -1,11 +1,11 @@
 {
-	"name": "n8n-nodes-gcp-pubsub",
+	"name": "n8n-nodes-gcp-pubsub-x78",
 	"version": "0.1.0",
 	"description": "Google GCP pub/sub nodes for n8n",
 	"license": "MIT",
 	"homepage": "https://n8n.io",
 	"keywords": [
-		"n8n-nodes-gcp-pubsub"
+		"n8n-nodes-gcp-pubsub-x78"
 	],
 	"author": {
 		"name": "Experiment78",
@@ -32,7 +32,6 @@
 		"strict": true,
 		"credentials": [],
 		"nodes": [
-			"dist/nodes/Example/Example.node.js",
 			"dist/nodes/GCPPubSubTrigger/GCPPubSubTrigger.node.js"
 		]
 	},
