@@ -1,262 +1,191 @@
-![Banner image](https://user-images.githubusercontent.com/10284570/173569848-c624317f-42b1-45a6-ab09-f0ea3c247648.png)
+# n8n-nodes-gcp-pubsub
 
-# n8n-nodes-starter
+Community n8n nodes for Google Cloud Pub/Sub:
 
-This starter repository helps you build custom integrations for [n8n](https://n8n.io). It includes example nodes, credentials, the node linter, and all the tooling you need to get started.
+- **Google Cloud Pub/Sub Trigger** — starts a workflow when a message arrives on a subscription, emitting the payload along with the `ackId` required to acknowledge it later.
+- **Google Cloud Pub/Sub Action** — acknowledges, nacks (redelivers immediately) or extends the ack deadline of a specific message.
 
-## Quick Start
+The two nodes are designed to work together: the trigger receives messages **without** acknowledging them, and the action node decides per-message how to resolve each lease after your workflow has finished processing it.
 
-> [!TIP]
-> **New to building n8n nodes?** The fastest way to get started is with `npm create @n8n/node`. This command scaffolds a complete node package for you using the [@n8n/node-cli](https://www.npmjs.com/package/@n8n/node-cli).
+## Contents
 
-**To create a new node package from scratch:**
+- [Installation](#installation)
+- [Credentials](#credentials)
+- [Quick start](#quick-start)
+- [Trigger output](#trigger-output)
+- [Action node operations](#action-node-operations)
+- [Ack lifecycle and guarantees](#ack-lifecycle-and-guarantees)
+- [IAM roles](#iam-roles)
+- [Troubleshooting](#troubleshooting)
+- [Development](#development)
 
-```bash
-npm create @n8n/node
-```
+## Installation
 
-**Already using this starter? Start developing with:**
+Via the n8n UI: **Settings → Community Nodes → Install** and enter the package name `n8n-nodes-gcp-pubsub-x78`.
 
-```bash
-npm run dev
-```
-
-This starts n8n with your nodes loaded and hot reload enabled.
-
-## What's Included
-
-This starter repository includes two example nodes to learn from:
-
-- **[Example Node](nodes/Example/)** - A simple starter node that shows the basic structure with a custom `execute` method
-- **[GitHub Issues Node](nodes/GithubIssues/)** - A complete, production-ready example built using the **declarative style**:
-  - **Low-code approach** - Define operations declaratively without writing request logic
-  - Multiple resources (Issues, Comments)
-  - Multiple operations (Get, Get All, Create)
-  - Two authentication methods (OAuth2 and Personal Access Token)
-  - List search functionality for dynamic dropdowns
-  - Proper error handling and typing
-  - Ideal for HTTP API-based integrations
-
-> [!TIP]
-> The declarative/low-code style (used in GitHub Issues) is the recommended approach for building nodes that interact with HTTP APIs. It significantly reduces boilerplate code and handles requests automatically.
-
-Browse these examples to understand both approaches, then modify them or create your own.
-
-## Finding Inspiration
-
-Looking for more examples? Check out these resources:
-
-- **[npm Community Nodes](https://www.npmjs.com/search?q=keywords:n8n-community-node-package)** - Browse thousands of community-built nodes on npm using the `n8n-community-node-package` tag
-- **[n8n Built-in Nodes](https://github.com/n8n-io/n8n/tree/master/packages/nodes-base/nodes)** - Study the source code of n8n's official nodes for production-ready patterns and best practices
-- **[n8n Credentials](https://github.com/n8n-io/n8n/tree/master/packages/nodes-base/credentials)** - See how authentication is implemented for various services
-
-These are excellent resources to understand how to structure your nodes, handle different API patterns, and implement advanced features.
-
-## Prerequisites
-
-Before you begin, install the following on your development machine:
-
-### Required
-
-- **[Node.js](https://nodejs.org/)** (v22 or higher) and npm
-  - Linux/Mac/WSL: Install via [nvm](https://github.com/nvm-sh/nvm)
-  - Windows: Follow [Microsoft's NodeJS guide](https://learn.microsoft.com/en-us/windows/dev-environment/javascript/nodejs-on-windows)
-- **[git](https://git-scm.com/downloads)**
-
-### Recommended
-
-- Follow n8n's [development environment setup guide](https://docs.n8n.io/integrations/creating-nodes/build/node-development-environment/)
-
-> [!NOTE]
-> The `@n8n/node-cli` is included as a dev dependency and will be installed automatically when you run `npm install`. The CLI includes n8n for local development, so you don't need to install n8n globally.
-
-## Getting Started with this Starter
-
-Follow these steps to create your own n8n community node package:
-
-### 1. Create Your Repository
-
-[Generate a new repository](https://github.com/n8n-io/n8n-nodes-starter/generate) from this template, then clone it:
+From the CLI:
 
 ```bash
-git clone https://github.com/<your-organization>/<your-repo-name>.git
-cd <your-repo-name>
+npm install n8n-nodes-gcp-pubsub-x78
 ```
 
-### 2. Install Dependencies
+## Credentials
 
-```bash
-npm install
+Both nodes expose an **Authentication** dropdown with two branches:
+
+- **Service Account / ADC** → uses the **Google Cloud Pub/Sub API** credential, which supports three sub-modes selected by its **Auth Method** dropdown.
+- **OAuth2** → uses the **Google Cloud Pub/Sub OAuth2 API** credential, which authenticates as a Google user via n8n's OAuth2 flow.
+
+You only need to configure the credential that matches the branch you pick on each node. Switching between them is a one-click change; nothing is lost.
+
+### Google Cloud Pub/Sub API (service account / ADC)
+
+Pick one **Auth Method**:
+
+- **Service Account Key (Email + Private Key)** — paste the `client_email` and `private_key` from a downloaded JSON key into two separate fields. Escaped `\n` sequences in the private key are handled automatically. Use this when you prefer not to paste the full JSON blob. This is the default and is backwards-compatible with credentials created in earlier versions of the package.
+- **Service Account JSON** — paste the entire JSON key as downloaded from Google Cloud. `project_id`, `client_email` and `private_key` are extracted automatically, so the **Project ID** field can usually stay blank.
+- **Application Default Credentials** — no key material stored in n8n. The Google client library resolves credentials from the environment at runtime in this order: the `GOOGLE_APPLICATION_CREDENTIALS` env var, the gcloud user credentials file, then the metadata server when running on GCE / GKE / Cloud Run. Pair this mode with [Workload Identity](https://cloud.google.com/kubernetes-engine/docs/concepts/workload-identity) when hosting n8n on GKE or Cloud Run so credentials never leave Google Cloud. **Not available on n8n Cloud** — ambient credentials are not exposed to community nodes there.
+
+**Project ID** on this credential is optional; if blank it is inferred from the pasted JSON (Service Account JSON mode) or from ADC (`auth.getProjectId()`). Each node can still override it.
+
+### Google Cloud Pub/Sub OAuth2 API
+
+Use this when you want the nodes to act on behalf of a human Google user (for example a developer testing a workflow against their own subscriptions) rather than a machine identity.
+
+1. In **Google Cloud Console → APIs & Services → Credentials**, create an **OAuth 2.0 Client ID** of type **Web application**.
+2. Add your n8n callback URL as an **Authorised redirect URI**. n8n shows the exact URL in the credential editor (typically `https://<your-n8n-host>/rest/oauth2-credential/callback`).
+3. Enable the **Cloud Pub/Sub API** on the same project (**APIs & Services → Library**).
+4. In n8n, create a **Google Cloud Pub/Sub OAuth2 API** credential and paste the **Client ID** and **Client Secret**. All other OAuth2 fields (auth URL, token URL, scope, `access_type=offline&prompt=consent`) are pre-filled. The scope is pinned to `https://www.googleapis.com/auth/pubsub`.
+5. Fill in **Project ID** — OAuth2 tokens are not scoped to a project, so this field is required (or must be set per node).
+6. Click **Sign in with Google** and approve the consent screen.
+
+> **IAM caveat** — OAuth2 authenticates as the *user*, so `roles/pubsub.subscriber` (and, if you auto-create subscriptions, `roles/pubsub.editor`) must be granted to the Google account that signs in, **not** to a service account. If your org uses Google Groups, granting the role to the group works too.
+
+## Quick start
+
+```mermaid
+flowchart LR
+    Trigger["Google Cloud Pub/Sub Trigger"] --> Split["Split Out"]
+    Split --> Work["Your business logic"]
+    Work -- "ok" --> Ack["Pub/Sub Action · Acknowledge"]
+    Work -- "err" --> Nack["Pub/Sub Action · Nack"]
 ```
 
-This installs all required dependencies including the `@n8n/node-cli`.
+1. Add a **Google Cloud Pub/Sub Trigger** node.
+2. Fill in **Topic**, **Subscription**, and (optionally) override **Project ID**.
+3. Connect it to a **Split Out** node if your workflow expects one item per message.
+4. Process messages with any n8n nodes you like.
+5. On the success branch, add a **Google Cloud Pub/Sub Action** node with **Operation = Acknowledge**. Its defaults already reference `{{$json.ackId}}` and `{{$json._pubsub.subscription}}`, so no further configuration is required.
+6. On the error branch, add another action node with **Operation = Nack (Return Immediately)** so Pub/Sub redelivers the message.
 
-### 3. Explore the Examples
+If a workflow run ends without reaching either branch (e.g. the n8n instance restarts), Pub/Sub will automatically redeliver once the ack deadline expires.
 
-Browse the example nodes in [nodes/](nodes/) and [credentials/](credentials/) to understand the structure:
+## Trigger output
 
-- Start with [nodes/Example/](nodes/Example/) for a basic node
-- Study [nodes/GithubIssues/](nodes/GithubIssues/) for a real-world implementation
+Each message is emitted as one item with the following shape:
 
-### 4. Build Your Node
-
-Edit the example nodes to fit your use case, or create new node files by copying the structure from [nodes/Example/](nodes/Example/).
-
-> [!TIP]
-> If you want to scaffold a completely new node package, use `npm create @n8n/node` to start fresh with the CLI's interactive generator.
-
-### 5. Configure Your Package
-
-Update `package.json` with your details:
-
-- `name` - Your package name (must start with `n8n-nodes-`)
-- `author` - Your name and email
-- `repository` - Your repository URL
-- `description` - What your node does
-
-Make sure your node is registered in the `n8n.nodes` array.
-
-### 6. Develop and Test Locally
-
-Start n8n with your node loaded:
-
-```bash
-npm run dev
+```json
+{
+  "messageId": "12345",
+  "ackId": "Rd1-AUYeN...",
+  "publishTime": "2026-04-19T12:34:56.789Z",
+  "orderingKey": null,
+  "deliveryAttempt": 1,
+  "attributes": { "type": "order.created" },
+  "data": "{\"orderId\":\"abc\"}",
+  "_pubsub": {
+    "projectId": "my-proj",
+    "subscription": "projects/my-proj/subscriptions/my-sub"
+  }
+}
 ```
 
-This command runs `n8n-node dev` which:
+Enable **Decode JSON** on the trigger to have `data` automatically `JSON.parse`d. On parse failure the raw string is preserved and `jsonDecodeFailed: true` plus `jsonDecodeErrorMessage` are added to the item.
 
-- Builds your node with watch mode
-- Starts n8n with your node available
-- Automatically rebuilds when you make changes
-- Opens n8n in your browser (usually http://localhost:5678)
+`_pubsub.subscription` is the full Pub/Sub resource name and is the only identifier the action node needs to route its requests.
 
-You can now test your node in n8n workflows!
+### Trigger options
 
-> [!NOTE]
-> Learn more about CLI commands in the [@n8n/node-cli documentation](https://www.npmjs.com/package/@n8n/node-cli).
+| Option | Default | Purpose |
+|---|---|---|
+| Auto-Create Subscription | on | Create the subscription on the topic if it doesn't exist. Turn off to fail fast if misconfigured. |
+| Ack Deadline (Seconds) | 60 | Used only when the subscription is auto-created. |
+| Max Extension (Minutes) | 10 | How long the client keeps extending the ack deadline while waiting for the ack. Set higher than the slowest expected workflow run. |
+| Max Outstanding Messages | 100 | Flow control: cap on unacked messages held in memory. |
+| Max Outstanding Bytes | 100 MiB | Flow control: cap on cumulative size of unacked messages. |
 
-### 7. Lint Your Code
+## Action node operations
 
-Check for errors:
+The action node takes one of three operations, defaulting its inputs to the fields emitted by the trigger:
 
-```bash
-npm run lint
-```
+- **Acknowledge** — `POST …/subscriptions/{sub}:acknowledge` — tells Pub/Sub the message was handled successfully.
+- **Nack (Return Immediately)** — `POST …/subscriptions/{sub}:modifyAckDeadline` with `ackDeadlineSeconds: 0` — releases the lease so Pub/Sub redelivers as soon as possible.
+- **Extend Ack Deadline** — same endpoint with a user-supplied `ackDeadlineSeconds` (0–600). Use it when a downstream step is slow and you want to be explicit about holding the lease, on top of the trigger's automatic extension.
 
-Auto-fix issues when possible:
+Items that share a `subscription` (and deadline, for `Extend Ack Deadline`) are batched into a single REST call by default. Disable **Batch Requests** under **Options** to force one call per item.
 
-```bash
-npm run lint:fix
-```
+On success the action node attaches `ok: true`, `status: 200`, `operation`, `subscription` and `ackId` to the item. On failure it raises a `NodeOperationError` pointing at the offending item (respecting the workflow's **Continue on Fail** setting).
 
-### 8. Build for Production
+## Ack lifecycle and guarantees
 
-When ready to publish:
+- **Delivery guarantee**: at-least-once. Duplicates can occur (trigger restart mid-processing, slow consumer exceeding `maxExtensionMinutes`, Pub/Sub redelivery). Design your workflow to be idempotent.
+- **ackId validity**: an `ackId` is a handle to one specific delivery and stays valid as long as the trigger's subscriber holds the lease and the ack deadline hasn't expired. The trigger's client library auto-extends the deadline up to `Max Extension (Minutes)` while the subscriber is alive.
+- **Ack done by the action node** travels over the public Pub/Sub REST endpoint, so it works regardless of which n8n worker the action runs on (this matters in queue-mode deployments).
+- **If the trigger restarts** mid-flight, in-flight `ackId`s become invalid. A late ack will fail with `FAILED_PRECONDITION` and Pub/Sub will redeliver after the ack deadline expires. The action node surfaces this as a typed error so you can branch on it.
+- **Ordering keys**: a nack on a message with an `orderingKey` blocks subsequent messages with the same key until the nacked message is redelivered. Keep this in mind when designing retry logic.
 
-```bash
-npm run build
-```
+## IAM roles
 
-This compiles your TypeScript code to the `dist/` folder.
+Grant the principal used by the credential the minimum roles needed:
 
-### 9. Prepare for Publishing
+| Feature | Role |
+|---|---|
+| Consume messages, ack/nack/modify deadline | `roles/pubsub.subscriber` |
+| Auto-create subscription from the trigger | `roles/pubsub.editor` (or a custom role with `pubsub.subscriptions.create` and `pubsub.topics.attachSubscription`) |
 
-Before publishing:
+The *principal* depends on the auth mode:
 
-1. **Update documentation**: Replace this README with your node's documentation. Use [README_TEMPLATE.md](README_TEMPLATE.md) as a starting point.
-2. **Update the LICENSE**: Add your details to the [LICENSE](LICENSE.md) file.
-3. **Test thoroughly**: Ensure your node works in different scenarios.
+- **Service Account Key / Service Account JSON** — grant roles to the service account whose key you pasted (`client_email`).
+- **Application Default Credentials** — grant roles to whichever identity the environment resolves to (the Workload Identity-bound service account on GKE / Cloud Run, or the user in `gcloud auth application-default login`).
+- **OAuth2** — grant roles to the Google user (or their group) who authorises the credential. Service-account grants do **not** apply.
 
-### 10. Publish to npm
-
-Publishing is handled automatically by the included GitHub Actions workflow ([.github/workflows/publish.yml](.github/workflows/publish.yml)). It runs on every version tag push and publishes to npm with a provenance attestation — a requirement for n8n community nodes starting May 1, 2026.
-
-#### One-time setup
-
-Configure npm to trust this repository's GitHub Actions workflow so it can publish on your behalf. Log in to [npmjs.com](https://npmjs.com), open your package settings, and under **Publish access → Trusted Publishers** add a publisher with:
-
-- **Repository owner**: your GitHub username or org
-- **Repository name**: your repo name
-- **Workflow name**: `publish.yml`
-
-No token or secret needs to be stored in GitHub — the workflow uses GitHub's OIDC token instead.
-
-> [!NOTE]
-> If you prefer a traditional npm token, create a Granular Access Token on npmjs.com and store it as `NPM_TOKEN` in your repository's Actions secrets. See the comments at the top of `.github/workflows/publish.yml` for details.
-
-#### Releasing a new version
-
-```bash
-npm run release
-```
-
-This lints, builds, prompts for a version bump, updates the changelog, commits, tags, and pushes — which triggers the workflow to publish to npm.
-
-### 11. Submit for Verification (Optional)
-
-Get your node verified for n8n Cloud:
-
-1. Ensure your node meets the [requirements](https://docs.n8n.io/integrations/creating-nodes/deploy/submit-community-nodes/):
-   - Uses MIT license ✅ (included in this starter)
-   - No external package dependencies
-   - Follows n8n's design guidelines
-   - Passes quality and security review
-
-2. Submit through the [n8n Creator Portal](https://creators.n8n.io/nodes)
-
-**Benefits of verification:**
-
-- Available directly in n8n Cloud
-- Discoverable in the n8n nodes panel
-- Verified badge for quality assurance
-- Increased visibility in the n8n community
-
-## Available Scripts
-
-This starter includes several npm scripts to streamline development:
-
-| Script                | Description                                                                 |
-| --------------------- | --------------------------------------------------------------------------- |
-| `npm run dev`         | Start n8n with your node and watch for changes (runs `n8n-node dev`)        |
-| `npm run build`       | Compile TypeScript to JavaScript for production (runs `n8n-node build`)     |
-| `npm run build:watch` | Build in watch mode (auto-rebuild on changes)                               |
-| `npm run lint`        | Check your code for errors and style issues (runs `n8n-node lint`)          |
-| `npm run lint:fix`    | Automatically fix linting issues when possible (runs `n8n-node lint --fix`) |
-| `npm run release`     | Create a new release (runs `n8n-node release`)                              |
-
-> [!TIP]
-> These scripts use the [@n8n/node-cli](https://www.npmjs.com/package/@n8n/node-cli) under the hood. You can also run CLI commands directly, e.g., `npx n8n-node dev`.
+Turn **Auto-Create Subscription** off in the trigger if you don't want to grant editor-level permissions and prefer to create subscriptions out-of-band.
 
 ## Troubleshooting
 
-### My node doesn't appear in n8n
+**`FAILED_PRECONDITION: You are attempting to acknowledge with expired ackId`**
+The message's lease expired before the action node acked it. Raise **Max Extension (Minutes)** on the trigger so the client library keeps extending the deadline for longer, or simplify the downstream workflow so it finishes sooner. Pub/Sub will redeliver the message.
 
-1. Make sure you ran `npm install` to install dependencies
-2. Check that your node is listed in `package.json` under `n8n.nodes`
-3. Restart the dev server with `npm run dev`
-4. Check the console for any error messages
+**Private-key auth errors (`invalid_grant`, `PEM_read_bio_PrivateKey`)**
+Make sure the **Private Key** credential field contains the full PEM, BEGIN/END markers included. Escaped `\n` sequences are converted automatically; triple-escaping them (for example by wrapping the value in extra quotes before pasting) will break parsing.
 
-### Linting errors
+**Trigger stays quiet while messages are visible in the console**
+Check that the subscription exists and that the service account has `roles/pubsub.subscriber` on it. If auto-create is off, also verify that the subscription names match exactly (they are case-sensitive).
 
-Run `npm run lint:fix` to automatically fix most common issues. For remaining errors, check the [n8n node development guidelines](https://docs.n8n.io/integrations/creating-nodes/).
+**Messages show up again after processing**
+Either the action node did not run (check your error branch wiring) or the ack call failed (inspect the item's `ok`, `status`, and `message` fields). Remember: delivery is at-least-once.
 
-### TypeScript errors
+## Development
 
-Make sure you're using Node.js v22 or higher and have run `npm install` to get all type definitions.
+```bash
+npm install
+npm run dev           # hot-reload n8n with the nodes loaded
+npm run build         # build into dist/
+npm run lint          # n8n community-node lint + eslint
+npm run lint:fix      # auto-fix where possible
+```
 
-## Resources
+Code layout:
 
-- **[n8n Node Documentation](https://docs.n8n.io/integrations/creating-nodes/)** - Complete guide to building nodes
-- **[n8n Community Forum](https://community.n8n.io/)** - Get help and share your nodes
-- **[@n8n/node-cli Documentation](https://www.npmjs.com/package/@n8n/node-cli)** - CLI tool reference
-- **[n8n Creator Portal](https://creators.n8n.io/nodes)** - Submit your node for verification
-- **[Submit Community Nodes Guide](https://docs.n8n.io/integrations/creating-nodes/deploy/submit-community-nodes/)** - Verification requirements and process
+- [`credentials/GcpPubSubApi.credentials.ts`](credentials/GcpPubSubApi.credentials.ts) — service-account credential (key / JSON / ADC sub-modes).
+- [`credentials/GcpPubSubOAuth2Api.credentials.ts`](credentials/GcpPubSubOAuth2Api.credentials.ts) — OAuth2 credential preset for Google + Pub/Sub scope.
+- [`nodes/GcpPubSubTrigger/GcpPubSubTrigger.node.ts`](nodes/GcpPubSubTrigger/GcpPubSubTrigger.node.ts) — streaming-pull trigger.
+- [`nodes/GcpPubSubAction/GcpPubSubAction.node.ts`](nodes/GcpPubSubAction/GcpPubSubAction.node.ts) — ack/nack/extend action.
+- [`nodes/shared/auth.ts`](nodes/shared/auth.ts) — `buildPubSubAuth` dispatcher that returns `{ authClient, pubsub, projectId }` for all four auth modes.
+- [`nodes/shared/pubsubRest.ts`](nodes/shared/pubsubRest.ts) — thin REST wrapper around `:acknowledge` and `:modifyAckDeadline`.
 
-## Contributing
-
-Have suggestions for improving this starter? [Open an issue](https://github.com/n8n-io/n8n-nodes-starter/issues) or submit a pull request!
+The project depends on `@google-cloud/pubsub` (for streaming pull) and `google-auth-library` (for signing JWTs used by the REST ack calls). These external runtime dependencies mean the package is not eligible for the "n8n Cloud verified" status today; self-hosted n8n instances install it without issue.
 
 ## License
 
-[MIT](https://github.com/n8n-io/n8n-nodes-starter/blob/master/LICENSE.md)
+[MIT](LICENSE.md)
