@@ -1,11 +1,26 @@
 {
 	"name": "n8n-nodes-gcp-pubsub-x78",
-	"version": "0.1.0",
-	"description": "Google GCP pub/sub nodes for n8n",
+	"version": "0.2.0",
+	"description": "Google Cloud Pub/Sub trigger, publish, and ack/nack/extend-deadline action nodes for n8n",
 	"license": "MIT",
-	"homepage": "https://n8n.io",
+	"homepage": "https://github.com/experiment78-apps/n8n-node-gcp-pubsub#readme",
+	"bugs": {
+		"url": "https://github.com/experiment78-apps/n8n-node-gcp-pubsub/issues"
+	},
+	"engines": {
+		"node": ">=20"
+	},
 	"keywords": [
-		"n8n-nodes-gcp-pubsub-x78"
+		"n8n-community-node-package",
+		"n8n-nodes-gcp-pubsub-x78",
+		"gcp",
+		"pubsub",
+		"google-cloud",
+		"messaging",
+		"event-driven",
+		"streaming",
+		"workflow",
+		"trigger"
 	],
 	"author": {
 		"name": "Experiment78",
@@ -21,6 +36,8 @@
 		"dev": "n8n-node dev",
 		"lint": "n8n-node lint",
 		"lint:fix": "n8n-node lint --fix",
+		"test": "jest",
+		"test:watch": "jest --watch",
 		"release": "n8n-node release",
 		"prepublishOnly": "n8n-node prerelease"
 	},
@@ -29,24 +46,29 @@
 	],
 	"n8n": {
 		"n8nNodesApiVersion": 1,
-		"strict": true,
-		"credentials": [],
+		"strict": false,
+		"credentials": [
+			"dist/credentials/GcpPubSubApi.credentials.js",
+			"dist/credentials/GcpPubSubOAuth2Api.credentials.js"
+		],
 		"nodes": [
-			"dist/nodes/GCPPubSubTrigger/GCPPubSubTrigger.node.js"
+			"dist/nodes/GcpPubSubTrigger/GcpPubSubTrigger.node.js",
+			"dist/nodes/GcpPubSubAction/GcpPubSubAction.node.js",
+			"dist/nodes/GcpPubSubPublish/GcpPubSubPublish.node.js"
 		]
 	},
 	"devDependencies": {
-		"@n8n/node-cli": "*",
+		"@n8n/node-cli": "^0.23.0",
 		"@types/express": "^5.0.6",
+		"@types/jest": "^30.0.0",
 		"eslint": "9.39.4",
+		"jest": "^30.3.0",
 		"n8n-core": "^1.122.18",
 		"n8n-workflow": "^2.13.1",
 		"prettier": "3.8.1",
 		"release-it": "19.2.4",
+		"ts-jest": "^29.4.9",
 		"typescript": "5.9.3"
-	},
-	"peerDependencies": {
-		"n8n-workflow": "*"
 	},
 	"dependencies": {
 		"@google-cloud/pubsub": "^5.3.0",
