@@ -3,7 +3,7 @@ import { VersionedNodeType } from 'n8n-workflow';
 
 import { GcpPubSubTriggerV1 } from './v1/GcpPubSubTriggerV1.node';
 
-export class GCPPubSubTrigger extends VersionedNodeType {
+export class GcpPubSubTrigger extends VersionedNodeType {
 	constructor() {
 		const baseDescription: INodeTypeBaseDescription = {
 			displayName: 'Google Cloud Pub/Sub Trigger',
