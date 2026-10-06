@@ -22,6 +22,8 @@ The two nodes are designed to work together: the trigger receives messages **wit
 
 ## Installation
 
+Requires Node.js 22 or newer (including for the Google Cloud client libraries).
+
 Via the n8n UI: **Settings → Community Nodes → Install** and enter the package name `n8n-nodes-gcp-pubsub-x78`.
 
 From the CLI:
@@ -146,7 +148,7 @@ Items that share a `subscription` (and deadline, for `Extend Ack Deadline`) are 
 
 On success the action node attaches `ok: true`, `status: 200`, `operation`, `subscription` and `ackId` to the item. On failure it raises a `NodeOperationError` pointing at the offending item (respecting the workflow's **Continue on Fail** setting).
 
-The REST helper retries up to 3 times on transient failures (HTTP 408, 429, 5xx, and network errors). `FAILED_PRECONDITION` (expired `ackId`) is never retried — it is reported verbatim so your workflow can branch on it.
+The REST helper retries up to 3 times on transient failures (HTTP 408, 429, 5xx, and network errors), with a 10-second request timeout and a 30-second overall deadline. HTTP 400 errors, including `FAILED_PRECONDITION`, are never retried — they are reported verbatim so your workflow can branch on them.
 
 ## Publish node
 
@@ -154,7 +156,7 @@ The **Google Cloud Pub/Sub Publish** node sends messages to a topic. Useful when
 
 Fields:
 
-- **Topic** — resource locator (list or short name).
+- **Topic** — resource locator (list, short name, or full resource path). Topic and Project ID expressions are resolved per input item; messages are batched separately for each destination topic.
 - **Data Mode** — how the **Data** field is encoded into the Pub/Sub payload:
   - `JSON (Auto-Serialize)` — objects and arrays are stringified; strings pass through unchanged.
   - `Text` — sent as a UTF-8 string.

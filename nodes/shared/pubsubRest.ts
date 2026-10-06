@@ -1,6 +1,8 @@
 import type { AuthClient } from 'google-auth-library';
 
 const DEFAULT_PUBSUB_API = 'https://pubsub.googleapis.com/v1';
+const REQUEST_TIMEOUT_MS = 10000;
+const OPERATION_TIMEOUT_MS = 30000;
 
 /**
  * Normalises a subscription argument into the canonical
@@ -35,10 +37,6 @@ interface GaxiosLikeError {
 	code?: string | number;
 }
 
-function isRetryableStatus(status: number): boolean {
-	return status === 408 || status === 429 || (status >= 500 && status < 600);
-}
-
 async function postToSubscription(
 	authClient: AuthClient,
 	subscription: string,
@@ -52,9 +50,13 @@ async function postToSubscription(
 			method: 'POST',
 			url,
 			data: body,
+			timeout: REQUEST_TIMEOUT_MS,
+			signal: AbortSignal.timeout(OPERATION_TIMEOUT_MS),
 			retry: true,
 			retryConfig: {
 				retry: 3,
+				noResponseRetries: 3,
+				totalTimeout: OPERATION_TIMEOUT_MS,
 				retryDelay: 250,
 				httpMethodsToRetry: ['POST'],
 				statusCodesToRetry: [
@@ -62,17 +64,6 @@ async function postToSubscription(
 					[429, 429],
 					[500, 599],
 				],
-				shouldRetry: (err: GaxiosLikeError): boolean => {
-					const status = err.response?.status ?? 0;
-					const apiStatus = err.response?.data?.error?.status;
-					if (status === 400 && apiStatus === 'FAILED_PRECONDITION') {
-						return false;
-					}
-					if (status === 0) {
-						return true;
-					}
-					return isRetryableStatus(status);
-				},
 			},
 		});
 		const status = res.status ?? 0;

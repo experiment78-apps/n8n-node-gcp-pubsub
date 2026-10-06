@@ -1,4 +1,4 @@
-import type { Attributes } from '@google-cloud/pubsub';
+import type { Attributes, Topic } from '@google-cloud/pubsub';
 import type {
 	IDataObject,
 	IExecuteFunctions,
@@ -111,7 +111,8 @@ export class GcpPubSubPublishV1 implements INodeType {
 							{
 								type: 'regex',
 								properties: {
-									regex: '^(?!goog)[A-Za-z][A-Za-z0-9._~%+\\-]{2,254}$|^projects/[^/]+/topics/[^/]+$',
+									regex:
+										'^(?!goog)[A-Za-z][A-Za-z0-9._~%+\\-]{2,254}$|^projects/[^/]+/topics/[^/]+$',
 									errorMessage:
 										'Enter a short topic name (3-255 chars, cannot start with "goog") or a full resource path (projects/.../topics/...)',
 								},
@@ -217,7 +218,8 @@ export class GcpPubSubPublishV1 implements INodeType {
 						type: 'number',
 						typeOptions: { minValue: 1024 },
 						default: 1048576,
-						description: 'Maximum total payload bytes buffered before a batch is sent (default 1 MiB)',
+						description:
+							'Maximum total payload bytes buffered before a batch is sent (default 1 MiB)',
 					},
 					{
 						displayName: 'Batch Max Milliseconds',
@@ -279,27 +281,35 @@ export class GcpPubSubPublishV1 implements INodeType {
 			);
 		}
 
-		const topicName = ((this.getNodeParameter('topic', 0, '', { extractValue: true }) as string) ?? '').trim();
-		if (!topicName) {
-			await pubsub.close().catch(() => undefined);
-			throw new NodeOperationError(this.getNode(), 'Topic is required');
-		}
-		const fullTopic = topicName.startsWith('projects/')
-			? topicName
-			: `projects/${projectId}/topics/${topicName}`;
-
-		const topic = pubsub.topic(fullTopic, {
-			batching: {
-				maxMessages: options.batchingMaxMessages ?? 100,
-				maxBytes: options.batchingMaxBytes ?? 1024 * 1024,
-				maxMilliseconds: options.batchingMaxMilliseconds ?? 10,
-			},
-		});
-
+		const topics = new Map<string, Topic>();
+		const topicNames: Array<string | undefined> = [];
 		const output: INodeExecutionData[] = [];
 
 		try {
 			const publishes = items.map(async (_item, i) => {
+				const topicName = (
+					(this.getNodeParameter('topic', i, '', { extractValue: true }) as string) ?? ''
+				).trim();
+				if (!topicName) {
+					throw new NodeOperationError(this.getNode(), 'Topic is required', { itemIndex: i });
+				}
+				const itemProjectId =
+					((this.getNodeParameter('projectId', i, '') as string) ?? '').trim() || projectId;
+				const fullTopic = topicName.startsWith('projects/')
+					? topicName
+					: `projects/${itemProjectId}/topics/${topicName}`;
+				topicNames[i] = fullTopic;
+				let topic = topics.get(fullTopic);
+				if (!topic) {
+					topic = pubsub.topic(fullTopic, {
+						batching: {
+							maxMessages: options.batchingMaxMessages ?? 100,
+							maxBytes: options.batchingMaxBytes ?? 1024 * 1024,
+							maxMilliseconds: options.batchingMaxMilliseconds ?? 10,
+						},
+					});
+					topics.set(fullTopic, topic);
+				}
 				const dataMode = this.getNodeParameter('dataMode', i, 'json') as DataMode;
 				const rawData = this.getNodeParameter('data', i, '');
 				const attributesParam = this.getNodeParameter('attributes', i, {}) as {
@@ -333,7 +343,7 @@ export class GcpPubSubPublishV1 implements INodeType {
 					...(orderingKey ? { orderingKey } : {}),
 				});
 
-				return { index: i, messageId };
+				return { topic: fullTopic, messageId };
 			});
 
 			const results = await Promise.allSettled(publishes);
@@ -346,7 +356,7 @@ export class GcpPubSubPublishV1 implements INodeType {
 						json: {
 							...baseJson,
 							_publish: {
-								topic: fullTopic,
+								topic: res.value.topic,
 								messageId: res.value.messageId,
 								ok: true,
 							},
@@ -360,7 +370,7 @@ export class GcpPubSubPublishV1 implements INodeType {
 							json: {
 								...baseJson,
 								_publish: {
-									topic: fullTopic,
+									topic: topicNames[i] ?? null,
 									ok: false,
 									message: error.message,
 								},
@@ -374,12 +384,14 @@ export class GcpPubSubPublishV1 implements INodeType {
 				}
 			}
 		} finally {
-			try {
-				await topic.flush();
-			} catch (err) {
-				this.logger.warn('Error while flushing Pub/Sub publisher', {
-					error: err instanceof Error ? err.message : String(err),
-				});
+			for (const topic of topics.values()) {
+				try {
+					await topic.flush();
+				} catch (err) {
+					this.logger.warn('Error while flushing Pub/Sub publisher', {
+						error: err instanceof Error ? err.message : String(err),
+					});
+				}
 			}
 			try {
 				await pubsub.close();

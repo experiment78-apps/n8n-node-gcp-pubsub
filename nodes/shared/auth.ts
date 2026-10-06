@@ -21,9 +21,7 @@ export interface PubSubAuthBundle {
 }
 
 export interface CredentialLoader {
-	getCredentials<T extends object = ICredentialDataDecryptedObject>(
-		type: string,
-	): Promise<T>;
+	getCredentials<T extends object = ICredentialDataDecryptedObject>(type: string): Promise<T>;
 }
 
 /**
@@ -78,7 +76,8 @@ async function buildServiceAccountAuth(
 	credentials: ICredentialDataDecryptedObject,
 	projectIdOverride: string | undefined,
 ): Promise<{ googleAuth: GoogleAuth; projectId: string }> {
-	const authType = (credentials.authType as ServiceAccountAuthType | undefined) ?? 'serviceAccountKey';
+	const authType =
+		(credentials.authType as ServiceAccountAuthType | undefined) ?? 'serviceAccountKey';
 	let googleAuth: GoogleAuth;
 	let jsonProjectId: string | undefined;
 
@@ -132,31 +131,54 @@ async function buildServiceAccountAuth(
 	return { googleAuth, projectId };
 }
 
+interface OAuth2TokenData {
+	access_token?: string;
+	accessToken?: string;
+	refresh_token?: string;
+	refreshToken?: string;
+	expiry_date?: number | string;
+	n8n_expires_at?: string;
+	token_type?: string;
+	scope?: string;
+}
+
 function buildOAuth2GoogleAuth(
 	credentials: ICredentialDataDecryptedObject,
 	projectIdOverride: string | undefined,
 ): { googleAuth: GoogleAuth; projectId: string } {
-	const tokenData = credentials.oauthTokenData as
-		| {
-				access_token?: string;
-				refresh_token?: string;
-				expiry_date?: number;
-				token_type?: string;
-				scope?: string;
-			}
-		| undefined;
-	const accessToken = trimOrUndefined(tokenData?.access_token);
+	const tokenData = credentials.oauthTokenData as OAuth2TokenData | undefined;
+	const accessToken = trimOrUndefined(tokenData?.access_token ?? tokenData?.accessToken);
 	if (!accessToken) {
 		throw new Error(
 			'OAuth2 credential is missing an access token. Re-authorise the credential in n8n.',
 		);
 	}
 
-	const oauth2Client = new OAuth2Client();
+	const refreshToken = trimOrUndefined(tokenData?.refresh_token ?? tokenData?.refreshToken);
+	const clientId = trimOrUndefined(credentials.clientId);
+	const clientSecret = trimOrUndefined(credentials.clientSecret);
+	if (refreshToken && !clientId) {
+		throw new Error(
+			'OAuth2 credential is missing its Client ID. Re-authorise the credential in n8n.',
+		);
+	}
+	const rawExpiry = tokenData?.expiry_date ?? tokenData?.n8n_expires_at;
+	const numericExpiry = Number(rawExpiry);
+	const parsedExpiry =
+		Number.isFinite(numericExpiry) && numericExpiry > 0
+			? numericExpiry
+			: typeof rawExpiry === 'string'
+				? Date.parse(rawExpiry)
+				: NaN;
+	// Older n8n credentials only store expires_in. Its original start time is
+	// unknown, so refresh before opening a long-lived stream instead of treating
+	// a persisted token as newly issued on each execution.
+	const expiryDate = Number.isFinite(parsedExpiry) ? parsedExpiry : refreshToken ? 1 : undefined;
+	const oauth2Client = new OAuth2Client({ clientId, clientSecret });
 	oauth2Client.setCredentials({
 		access_token: accessToken,
-		refresh_token: tokenData?.refresh_token,
-		expiry_date: tokenData?.expiry_date,
+		refresh_token: refreshToken,
+		expiry_date: expiryDate,
 		token_type: tokenData?.token_type,
 		scope: tokenData?.scope,
 	});
@@ -193,7 +215,7 @@ export function restBaseForApiEndpoint(apiEndpoint: string | undefined): string 
 function buildEmulatorAuthClient(): AuthClient {
 	return {
 		async request(opts: Parameters<AuthClient['request']>[0]) {
-			return gaxios.request({ validateStatus: () => true, ...opts });
+			return gaxios.request(opts);
 		},
 	} as unknown as AuthClient;
 }
@@ -213,14 +235,11 @@ export async function buildPubSubAuth(
 	const apiEndpoint = normaliseApiEndpoint(credentials.apiEndpoint);
 
 	if (useEmulator) {
-		const emulatorHost =
-			normaliseApiEndpoint(credentials.emulatorHost) ?? 'localhost:8085';
+		const emulatorHost = normaliseApiEndpoint(credentials.emulatorHost) ?? 'localhost:8085';
 		const [host, portStr] = emulatorHost.split(':');
 		const port = portStr ? Number(portStr) : 8085;
 		const projectId =
-			projectIdOverride ??
-			trimOrUndefined(credentials.projectId) ??
-			EMULATOR_DEFAULT_PROJECT;
+			projectIdOverride ?? trimOrUndefined(credentials.projectId) ?? EMULATOR_DEFAULT_PROJECT;
 		const pubsub = new PubSub({
 			projectId,
 			emulatorMode: true,

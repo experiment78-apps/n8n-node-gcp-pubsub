@@ -16,6 +16,7 @@ jest.mock('google-auth-library', () => {
 	class GoogleAuthMock {
 		constructor(public opts: Record<string, unknown>) {}
 		async getClient() {
+			if (this.opts.authClient) return this.opts.authClient;
 			return {
 				async request() {
 					return { status: 200, data: {} };
@@ -30,6 +31,63 @@ jest.mock('google-auth-library', () => {
 		...actual,
 		GoogleAuth: GoogleAuthMock,
 	};
+});
+
+describe('buildPubSubAuth OAuth2 refresh', () => {
+	const credentials = {
+		projectId: 'oauth-project',
+		clientId: 'test-client-id',
+		clientSecret: 'test-client-secret',
+	};
+
+	it.each([
+		{ expiry_date: 1 },
+		{ n8n_expires_at: '1970-01-01T00:00:00.001Z' },
+		{ n8n_expires_at: '1' },
+		{ expires_in: 3600 },
+	])(
+		'refreshes expired or undated persisted tokens with client credentials (%j)',
+		async (expiry) => {
+			const bundle = await buildPubSubAuth(
+				credentialLoaderFor({
+					...credentials,
+					oauthTokenData: { access_token: 'old-token', refresh_token: 'refresh-token', ...expiry },
+				}),
+				{ authentication: 'oAuth2' },
+			);
+			const client = bundle.authClient as import('google-auth-library').OAuth2Client;
+			const request = jest.spyOn(client.transporter, 'request').mockResolvedValue({
+				data: { access_token: 'new-token', expires_in: 3600 },
+			} as never);
+
+			expect((await client.getAccessToken()).token).toBe('new-token');
+			const form = request.mock.calls[0][0]?.data as URLSearchParams;
+			expect(form.get('client_id')).toBe(credentials.clientId);
+			expect(form.get('client_secret')).toBe(credentials.clientSecret);
+			expect(form.get('refresh_token')).toBe('refresh-token');
+			expect(client.credentials.expiry_date).toBeGreaterThan(Date.now());
+			await client.getAccessToken();
+			expect(request).toHaveBeenCalledTimes(1);
+		},
+	);
+
+	it('keeps a token whose absolute n8n expiry is still in the future', async () => {
+		const bundle = await buildPubSubAuth(
+			credentialLoaderFor({
+				...credentials,
+				oauthTokenData: {
+					access_token: 'valid-token',
+					refresh_token: 'refresh-token',
+					n8n_expires_at: new Date(Date.now() + 3600000).toISOString(),
+				},
+			}),
+			{ authentication: 'oAuth2' },
+		);
+		const client = bundle.authClient as import('google-auth-library').OAuth2Client;
+		const request = jest.spyOn(client.transporter, 'request');
+		expect((await client.getAccessToken()).token).toBe('valid-token');
+		expect(request).not.toHaveBeenCalled();
+	});
 });
 
 import {
@@ -73,9 +131,7 @@ describe('parseServiceAccountJson', () => {
 	});
 
 	it('throws on invalid JSON', () => {
-		expect(() => parseServiceAccountJson('not json')).toThrow(
-			/not valid JSON/i,
-		);
+		expect(() => parseServiceAccountJson('not json')).toThrow(/not valid JSON/i);
 	});
 
 	it('throws when client_email or private_key missing', () => {

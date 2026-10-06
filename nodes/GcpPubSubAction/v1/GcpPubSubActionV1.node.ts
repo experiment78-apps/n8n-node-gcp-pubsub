@@ -92,8 +92,7 @@ export class GcpPubSubActionV1 implements INodeType {
 					{
 						name: 'Acknowledge',
 						value: 'ack',
-						description:
-							'Confirm successful processing so Pub/Sub stops redelivering',
+						description: 'Confirm successful processing so Pub/Sub stops redelivering',
 						action: 'Acknowledge a message',
 					},
 					{
@@ -164,8 +163,7 @@ export class GcpPubSubActionV1 implements INodeType {
 				type: 'number',
 				typeOptions: { minValue: 0, maxValue: 600 },
 				default: 60,
-				description:
-					'New ack deadline in seconds (0-600). Only used for Extend Ack Deadline.',
+				description: 'New ack deadline in seconds (0-600). Only used for Extend Ack Deadline.',
 				displayOptions: {
 					show: {
 						operation: ['extendDeadline'],
@@ -259,16 +257,17 @@ export class GcpPubSubActionV1 implements INodeType {
 		}
 
 		const plans: ItemPlan[] = [];
+		const output: INodeExecutionData[] = items.map((item, i) => ({
+			json: { ...(item.json as IDataObject) },
+			pairedItem: { item: i },
+		}));
 
 		for (let i = 0; i < items.length; i++) {
 			try {
 				const subscriptionParam =
-					(this.getNodeParameter('subscription', i, '', { extractValue: true }) as string) ??
-					'';
+					(this.getNodeParameter('subscription', i, '', { extractValue: true }) as string) ?? '';
 				const ackId = ((this.getNodeParameter('ackId', i) as string) ?? '').trim();
-				const projectIdParam = (
-					(this.getNodeParameter('projectId', i, '') as string) ?? ''
-				).trim();
+				const projectIdParam = ((this.getNodeParameter('projectId', i, '') as string) ?? '').trim();
 				const projectId = projectIdParam || resolvedProjectId;
 
 				if (!ackId) {
@@ -295,10 +294,13 @@ export class GcpPubSubActionV1 implements INodeType {
 				plans.push({ index: i, subscription, ackId, deadline });
 			} catch (error) {
 				if (this.continueOnFail()) {
-					plans.push({ index: i, subscription: '', ackId: '', deadline: null });
-					items[i] = {
-						json: items[i].json,
-						error: error as NodeOperationError,
+					const nodeError =
+						error instanceof NodeOperationError
+							? error
+							: new NodeOperationError(this.getNode(), error as Error, { itemIndex: i });
+					output[i] = {
+						json: { ...items[i].json, operation, ok: false, status: 0, message: nodeError.message },
+						error: nodeError,
 						pairedItem: { item: i },
 					};
 				} else {
@@ -320,11 +322,6 @@ export class GcpPubSubActionV1 implements INodeType {
 			groups.set(groupKey, existing);
 		}
 
-		const output: INodeExecutionData[] = items.map((item, i) => ({
-			json: { ...(item.json as IDataObject) },
-			pairedItem: { item: i },
-		}));
-
 		for (const group of groups.values()) {
 			const { subscription, deadline } = group[0];
 			const ackIds = group.map((p) => p.ackId);
@@ -333,13 +330,7 @@ export class GcpPubSubActionV1 implements INodeType {
 				result = await acknowledge(authClient, subscription, ackIds, restApiBase);
 			} else {
 				const seconds = deadline ?? 0;
-				result = await modifyAckDeadline(
-					authClient,
-					subscription,
-					ackIds,
-					seconds,
-					restApiBase,
-				);
+				result = await modifyAckDeadline(authClient, subscription, ackIds, seconds, restApiBase);
 			}
 
 			for (const plan of group) {

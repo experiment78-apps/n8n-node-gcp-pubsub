@@ -34,8 +34,7 @@ export class GcpPubSubTriggerV1 implements INodeType {
 		icon: 'file:gcpPubSub.svg',
 		group: ['trigger'],
 		version: 1,
-		description:
-			'Starts a workflow when a message is received on a Google Cloud Pub/Sub topic',
+		description: 'Starts a workflow when a message is received on a Google Cloud Pub/Sub topic',
 		defaults: {
 			name: 'Google Cloud Pub/Sub Trigger',
 		},
@@ -97,8 +96,7 @@ export class GcpPubSubTriggerV1 implements INodeType {
 				type: 'resourceLocator',
 				default: { mode: 'list', value: '' },
 				required: true,
-				description:
-					'Pub/Sub topic to listen to. Pick from the list or type a short name.',
+				description: 'Pub/Sub topic to listen to. Pick from the list or type a short name.',
 				modes: [
 					{
 						displayName: 'From List',
@@ -118,7 +116,8 @@ export class GcpPubSubTriggerV1 implements INodeType {
 							{
 								type: 'regex',
 								properties: {
-									regex: '^(?!goog)[A-Za-z][A-Za-z0-9._~%+\\-]{2,254}$|^projects/[^/]+/topics/[^/]+$',
+									regex:
+										'^(?!goog)[A-Za-z][A-Za-z0-9._~%+\\-]{2,254}$|^projects/[^/]+/topics/[^/]+$',
 									errorMessage:
 										'Enter a short topic name (3-255 chars, cannot start with "goog") or a full resource path (projects/.../topics/...)',
 								},
@@ -154,7 +153,8 @@ export class GcpPubSubTriggerV1 implements INodeType {
 							{
 								type: 'regex',
 								properties: {
-									regex: '^(?!goog)[A-Za-z][A-Za-z0-9._~%+\\-]{2,254}$|^projects/[^/]+/subscriptions/[^/]+$',
+									regex:
+										'^(?!goog)[A-Za-z][A-Za-z0-9._~%+\\-]{2,254}$|^projects/[^/]+/subscriptions/[^/]+$',
 									errorMessage:
 										'Enter a short subscription name (3-255 chars, cannot start with "goog") or a full resource path (projects/.../subscriptions/...)',
 								},
@@ -367,12 +367,13 @@ export class GcpPubSubTriggerV1 implements INodeType {
 		const maxBytes = options.maxBytes ?? 100 * 1024 * 1024;
 		const enableMessageOrdering = createOptions.enableMessageOrdering === true;
 
-		const shortTopic = topic.startsWith('projects/')
-			? topic.split('/').pop() ?? topic
-			: topic;
-		const shortSubscription = subscriptionName.startsWith('projects/')
-			? subscriptionName.split('/').pop() ?? subscriptionName
-			: subscriptionName;
+		const fullTopic = topic.startsWith('projects/')
+			? topic
+			: `projects/${projectId}/topics/${topic}`;
+		const fullSubscriptionName = subscriptionName.startsWith('projects/')
+			? subscriptionName
+			: `projects/${projectId}/subscriptions/${subscriptionName}`;
+		const subscriptionProjectId = fullSubscriptionName.split('/')[1];
 
 		if (autoCreate) {
 			const subscriptionCreateOptions: CreateSubscriptionOptions = {
@@ -396,7 +397,7 @@ export class GcpPubSubTriggerV1 implements INodeType {
 			if (dlqRaw) {
 				const dlqFullName = dlqRaw.startsWith('projects/')
 					? dlqRaw
-					: `projects/${projectId}/topics/${dlqRaw}`;
+					: `projects/${subscriptionProjectId}/topics/${dlqRaw}`;
 				subscriptionCreateOptions.deadLetterPolicy = {
 					deadLetterTopic: dlqFullName,
 					maxDeliveryAttempts: createOptions.deadLetterMaxDeliveryAttempts ?? 5,
@@ -405,8 +406,8 @@ export class GcpPubSubTriggerV1 implements INodeType {
 
 			try {
 				await pubsub
-					.topic(shortTopic)
-					.createSubscription(shortSubscription, subscriptionCreateOptions);
+					.topic(fullTopic)
+					.createSubscription(fullSubscriptionName, subscriptionCreateOptions);
 			} catch (error) {
 				if (!isAlreadyExistsError(error)) {
 					throw error;
@@ -414,7 +415,7 @@ export class GcpPubSubTriggerV1 implements INodeType {
 			}
 		}
 
-		const subscription: Subscription = pubsub.subscription(shortSubscription, {
+		const subscription: Subscription = pubsub.subscription(fullSubscriptionName, {
 			flowControl: {
 				maxMessages,
 				maxBytes,
@@ -422,8 +423,6 @@ export class GcpPubSubTriggerV1 implements INodeType {
 			maxExtensionTime: Duration.from({ minutes: maxExtensionMinutes }),
 			...(enableMessageOrdering ? { enableMessageOrdering: true } : {}),
 		});
-
-		const fullSubscriptionName = `projects/${projectId}/subscriptions/${shortSubscription}`;
 
 		const onMessage = (message: Message) => {
 			const rawData = message.data.toString('utf-8');
@@ -436,7 +435,7 @@ export class GcpPubSubTriggerV1 implements INodeType {
 				attributes: message.attributes ?? {},
 				data: rawData,
 				_pubsub: {
-					projectId,
+					projectId: subscriptionProjectId,
 					subscription: fullSubscriptionName,
 				},
 			};
