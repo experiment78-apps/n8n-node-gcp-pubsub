@@ -78,7 +78,8 @@ export class GcpPubSubOAuth2Api implements ICredentialType {
 			name: 'emulatorHost',
 			type: 'string',
 			default: 'localhost:8085',
-			description: 'host:port the Pub/Sub emulator is listening on.',
+			description:
+				'host:port the Pub/Sub emulator is listening on. The port defaults to 8085. IPv6 addresses are not supported.',
 			displayOptions: {
 				show: {
 					useEmulator: [true],

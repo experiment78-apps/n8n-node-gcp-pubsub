@@ -18,7 +18,26 @@ type DataMode = 'json' | 'text' | 'binary';
 
 interface AttributeEntry {
 	key: string;
-	value: string;
+	value: unknown;
+}
+
+/** Text form of an expression result: strings as-is, objects as JSON. */
+function toText(value: unknown): string {
+	if (typeof value === 'string') return value;
+	if (value === null || value === undefined) return '';
+	return typeof value === 'object' ? JSON.stringify(value) : String(value);
+}
+
+/**
+ * Decodes standard or URL-safe base64, with or without padding. Buffer.from
+ * silently drops characters it does not recognise, so the input is validated
+ * first; returns undefined when it is not base64.
+ */
+function decodeBase64(value: string): Buffer | undefined {
+	const compact = value.replace(/\s+/g, '').replace(/-/g, '+').replace(/_/g, '/');
+	const unpadded = compact.replace(/={1,2}$/, '');
+	if (!/^[A-Za-z0-9+/]*$/.test(unpadded) || unpadded.length % 4 === 1) return undefined;
+	return Buffer.from(unpadded, 'base64');
 }
 
 export class GcpPubSubPublishV1 implements INodeType {
@@ -137,12 +156,13 @@ export class GcpPubSubPublishV1 implements INodeType {
 					{
 						name: 'Text',
 						value: 'text',
-						description: 'Send the value as-is as a UTF-8 string',
+						description: 'Send the value as a UTF-8 string. Objects and arrays are stringified as JSON.',
 					},
 					{
 						name: 'Binary (Base64)',
 						value: 'binary',
-						description: 'Decode the value as base64 and send the resulting bytes',
+						description:
+							'Decode the value as base64 (standard or URL-safe) and send the resulting bytes. Fails if the value is not valid base64.',
 					},
 				],
 			},
@@ -167,7 +187,7 @@ export class GcpPubSubPublishV1 implements INodeType {
 				},
 				default: {},
 				description:
-					'Optional string key/value pairs attached to each message. Pub/Sub filters can match on attributes.',
+					'Optional key/value pairs attached to each message. Values are sent as strings. Pub/Sub filters can match on attributes.',
 				options: [
 					{
 						name: 'attribute',
@@ -319,11 +339,17 @@ export class GcpPubSubPublishV1 implements INodeType {
 
 				let buffer: Buffer;
 				if (dataMode === 'binary') {
-					const str = typeof rawData === 'string' ? rawData : String(rawData ?? '');
-					buffer = Buffer.from(str, 'base64');
+					const decoded = typeof rawData === 'string' ? decodeBase64(rawData) : undefined;
+					if (!decoded) {
+						throw new NodeOperationError(
+							this.getNode(),
+							'Data is not valid base64. Binary mode expects a base64-encoded string.',
+							{ itemIndex: i },
+						);
+					}
+					buffer = decoded;
 				} else if (dataMode === 'text') {
-					const str = typeof rawData === 'string' ? rawData : String(rawData ?? '');
-					buffer = Buffer.from(str, 'utf-8');
+					buffer = Buffer.from(toText(rawData), 'utf-8');
 				} else {
 					const serialized =
 						typeof rawData === 'string' ? rawData : JSON.stringify(rawData ?? null);
@@ -333,7 +359,7 @@ export class GcpPubSubPublishV1 implements INodeType {
 				const attributes: Attributes = {};
 				for (const entry of attributesParam.attribute ?? []) {
 					if (entry?.key) {
-						attributes[entry.key] = entry.value ?? '';
+						attributes[entry.key] = toText(entry.value);
 					}
 				}
 

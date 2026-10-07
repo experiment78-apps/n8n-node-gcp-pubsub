@@ -17,6 +17,7 @@ interface PubSubStub {
 function makeCtx(params: Record<string, unknown>): ILoadOptionsFunctions {
 	return {
 		getCurrentNodeParameter: (name: string) => params[name],
+		getNode: () => ({ name: 'Pub/Sub', type: 'test', typeVersion: 1, parameters: {} }),
 	} as unknown as ILoadOptionsFunctions;
 }
 
@@ -33,24 +34,92 @@ describe('searchTopics', () => {
 		mockBuildPubSubAuth.mockReset();
 	});
 
-	it('returns filtered short names and pagination token', async () => {
+	it('returns one unfiltered page with its pagination token', async () => {
 		const pubsub = stubPubSub();
 		pubsub.getTopics.mockResolvedValue([
-			[
-				{ name: 'projects/p/topics/alpha' },
-				{ name: 'projects/p/topics/beta' },
-				{ name: 'projects/p/topics/gamma' },
-			],
+			[{ name: 'projects/p/topics/alpha' }, { name: 'projects/p/topics/beta' }],
 			undefined,
 			{ nextPageToken: 'TOKEN' },
 		]);
 		mockBuildPubSubAuth.mockResolvedValue({ pubsub });
 
 		const ctx = makeCtx({ authentication: 'serviceAccount', projectId: 'p' });
+		const res = await searchTopics.call(ctx);
+
+		expect(res.results).toEqual([
+			{ name: 'alpha', value: 'alpha' },
+			{ name: 'beta', value: 'beta' },
+		]);
+		expect(res.paginationToken).toBe('TOKEN');
+		expect(pubsub.getTopics).toHaveBeenCalledTimes(1);
+		expect(pubsub.close).toHaveBeenCalled();
+	});
+
+	it('keeps scanning pages for a filter match that is not on the first page', async () => {
+		const pubsub = stubPubSub();
+		pubsub.getTopics
+			.mockResolvedValueOnce([
+				[{ name: 'projects/p/topics/alpha' }, { name: 'projects/p/topics/gamma' }],
+				undefined,
+				{ nextPageToken: 'PAGE2' },
+			])
+			.mockResolvedValueOnce([[{ name: 'projects/p/topics/beta' }], undefined, {}]);
+		mockBuildPubSubAuth.mockResolvedValue({ pubsub });
+
+		const ctx = makeCtx({ authentication: 'serviceAccount', projectId: 'p' });
 		const res = await searchTopics.call(ctx, 'bet');
 
 		expect(res.results).toEqual([{ name: 'beta', value: 'beta' }]);
-		expect(res.paginationToken).toBe('TOKEN');
+		expect(res.paginationToken).toBeUndefined();
+		expect(pubsub.getTopics).toHaveBeenNthCalledWith(1, {
+			pageSize: 500,
+			pageToken: undefined,
+			autoPaginate: false,
+		});
+		expect(pubsub.getTopics).toHaveBeenNthCalledWith(2, {
+			pageSize: 500,
+			pageToken: 'PAGE2',
+			autoPaginate: false,
+		});
+	});
+
+	it('stops a filtered scan once it has a page of matches and hands back the token', async () => {
+		const pubsub = stubPubSub();
+		const page = Array.from({ length: 60 }, (_, i) => ({ name: `projects/p/topics/match-${i}` }));
+		pubsub.getTopics.mockResolvedValue([page, undefined, { nextPageToken: 'MORE' }]);
+		mockBuildPubSubAuth.mockResolvedValue({ pubsub });
+
+		const res = await searchTopics.call(makeCtx({ authentication: 'serviceAccount' }), 'match');
+
+		expect(res.results).toHaveLength(60);
+		expect(res.paginationToken).toBe('MORE');
+		expect(pubsub.getTopics).toHaveBeenCalledTimes(1);
+	});
+
+	it('bounds a filtered scan that never matches', async () => {
+		const pubsub = stubPubSub();
+		pubsub.getTopics.mockResolvedValue([
+			[{ name: 'projects/p/topics/alpha' }],
+			undefined,
+			{ nextPageToken: 'MORE' },
+		]);
+		mockBuildPubSubAuth.mockResolvedValue({ pubsub });
+
+		const res = await searchTopics.call(makeCtx({ authentication: 'serviceAccount' }), 'zzz');
+
+		expect(res.results).toEqual([]);
+		expect(res.paginationToken).toBe('MORE');
+		expect(pubsub.getTopics).toHaveBeenCalledTimes(20);
+	});
+
+	it('explains a missing list permission', async () => {
+		const pubsub = stubPubSub();
+		pubsub.getTopics.mockRejectedValue(Object.assign(new Error('denied'), { code: 7 }));
+		mockBuildPubSubAuth.mockResolvedValue({ pubsub });
+
+		await expect(searchTopics.call(makeCtx({ authentication: 'serviceAccount' }))).rejects.toThrow(
+			'not allowed to list topics (pubsub.topics.list)',
+		);
 		expect(pubsub.close).toHaveBeenCalled();
 	});
 

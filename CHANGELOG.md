@@ -1,5 +1,20 @@
 ## Unreleased
 
+- Trigger: add an **Acknowledge** mode. The default is now to acknowledge when the execution succeeds and nack when it fails; acknowledging manually via the Action node, or immediately, are the alternatives.
+- Trigger: **Create Subscription If Missing** replaces the Auto-Create Subscription option and is off by default, so the default configuration works with `roles/pubsub.subscriber`. **Topic** and **New Subscription Settings** (which now holds Ack Deadline) only appear when it is on.
+- Trigger: subscriptions it creates get an exponential-backoff retry policy (10–600 s) unless set to retry immediately.
+- Trigger: release a message's lease when its execution finishes. Previously every message, including ones already acknowledged by the Action node, stayed in the client's inventory with its ack deadline re-extended until Max Extension elapsed. In manual mode an execution that ends without acknowledging now releases the message for immediate redelivery instead of holding it until Max Extension.
+- Trigger: keep extending the leases of in-flight messages when the workflow is saved, deactivated, or run as a test. Previously extension stopped at that point and a still-running execution's message was redelivered once its lease lapsed.
+- Trigger: close the subscriber when a test run times out or errors, and consume only one message per test run.
+- Trigger: when asked to create a subscription that already exists on a different topic, refuse to start; report a missing subscription at activation.
+- Trigger: run executions for the same ordering key one at a time on ordered subscriptions (assumed ordered when the settings cannot be read).
+- Credential test passes for principals that can authenticate but not list topics; dropdown errors explain the missing permission.
+- Dropdown search scans beyond the first page of topics and subscriptions.
+- Service-account keys no longer fall back to the host's ambient project; the project is inferred from the key or must be set.
+- Emulator Host is parsed once for gRPC, REST and the credential test (default port 8085; IPv6 rejected with a clear error).
+- Publish: Text mode stringifies objects as JSON, Binary mode rejects invalid base64, attribute values are coerced to strings.
+- Action: split large batches into calls of at most 1000 ackIds and validate the ack deadline range.
+- Replace the two overlapping publish workflows with one, and correct the codex node ids.
 - Require Node.js 22 or newer and update Google Cloud runtime dependencies to resolve production security advisories.
 - Bound acknowledgement retries to three attempts after the initial request, with request and operation timeouts.
 - Include OAuth client credentials during refresh and handle persisted token expiry before opening streams.

@@ -6,6 +6,8 @@ import type { ICredentialDataDecryptedObject } from 'n8n-workflow';
 const PUBSUB_SCOPES = ['https://www.googleapis.com/auth/pubsub'];
 const DEFAULT_REST_API_BASE = 'https://pubsub.googleapis.com/v1';
 const EMULATOR_DEFAULT_PROJECT = 'emulator-project';
+const DEFAULT_EMULATOR_HOST = 'localhost:8085';
+const DEFAULT_EMULATOR_PORT = 8085;
 
 export type Authentication = 'serviceAccount' | 'oAuth2';
 export type ServiceAccountAuthType =
@@ -72,6 +74,18 @@ export function parseServiceAccountJson(raw: string): CredentialBody & { project
 	};
 }
 
+/**
+ * Extracts the project from a user-managed service-account email
+ * (`name@{project}.iam.gserviceaccount.com`). Other shapes (default compute /
+ * App Engine accounts, domain-scoped projects) return undefined.
+ */
+export function projectIdFromServiceAccountEmail(email: string | undefined): string | undefined {
+	const match = /@([a-z][a-z0-9-]{4,28}[a-z0-9])\.iam\.gserviceaccount\.com$/i.exec(
+		email?.trim() ?? '',
+	);
+	return match?.[1].toLowerCase();
+}
+
 async function buildServiceAccountAuth(
 	credentials: ICredentialDataDecryptedObject,
 	projectIdOverride: string | undefined,
@@ -79,7 +93,7 @@ async function buildServiceAccountAuth(
 	const authType =
 		(credentials.authType as ServiceAccountAuthType | undefined) ?? 'serviceAccountKey';
 	let googleAuth: GoogleAuth;
-	let jsonProjectId: string | undefined;
+	let inferredProjectId: string | undefined;
 
 	if (authType === 'serviceAccountKey') {
 		const clientEmail = trimOrUndefined(credentials.email ?? credentials.client_email);
@@ -91,6 +105,7 @@ async function buildServiceAccountAuth(
 				'Service account credential is missing required fields (email and/or private key)',
 			);
 		}
+		inferredProjectId = projectIdFromServiceAccountEmail(clientEmail);
 		googleAuth = new GoogleAuth({
 			credentials: { client_email: clientEmail, private_key: privateKey },
 			scopes: PUBSUB_SCOPES,
@@ -101,7 +116,8 @@ async function buildServiceAccountAuth(
 			throw new Error('Service Account JSON is required');
 		}
 		const parsed = parseServiceAccountJson(raw);
-		jsonProjectId = parsed.project_id;
+		inferredProjectId =
+			trimOrUndefined(parsed.project_id) ?? projectIdFromServiceAccountEmail(parsed.client_email);
 		googleAuth = new GoogleAuth({
 			credentials: {
 				client_email: parsed.client_email,
@@ -115,16 +131,23 @@ async function buildServiceAccountAuth(
 		throw new Error(`Unsupported Auth Method: ${String(authType)}`);
 	}
 
+	// Only Application Default Credentials may take the project from the host
+	// environment. Pasted keys never fall back to it: the ambient project
+	// (GCLOUD_PROJECT, gcloud config, metadata server) belongs to whatever runs
+	// n8n, not to the pasted service account.
 	const projectId =
 		projectIdOverride ??
 		trimOrUndefined(credentials.projectId) ??
-		jsonProjectId ??
-		(await googleAuth.getProjectId().catch(() => '')) ??
-		'';
+		inferredProjectId ??
+		(authType === 'applicationDefault'
+			? await googleAuth.getProjectId().catch(() => undefined)
+			: undefined);
 
 	if (!projectId) {
 		throw new Error(
-			'Project ID could not be determined. Set it on the node, the credential, or ensure Application Default Credentials include a project.',
+			authType === 'applicationDefault'
+				? 'Project ID could not be determined. Set it on the node, the credential, or ensure Application Default Credentials include a project.'
+				: 'Project ID could not be determined from the service account. Set it on the node or the credential.',
 		);
 	}
 
@@ -206,6 +229,34 @@ export function restBaseForApiEndpoint(apiEndpoint: string | undefined): string 
 	return `https://${host}/v1`;
 }
 
+export interface EmulatorAddress {
+	host: string;
+	port: number;
+	/** `host:port`, always with an explicit port. */
+	authority: string;
+}
+
+/**
+ * Parses the credential's Emulator Host into one address shared by the gRPC
+ * client, the REST ack calls and the credential test. Accepts an optional
+ * http(s):// prefix and trailing slash; the port defaults to 8085.
+ */
+export function parseEmulatorHost(value: unknown): EmulatorAddress {
+	const raw = trimOrUndefined(value) ?? DEFAULT_EMULATOR_HOST;
+	const stripped = raw.replace(/^https?:\/\//i, '').replace(/\/+$/, '');
+	if (stripped.includes('[') || (stripped.match(/:/g) ?? []).length > 1) {
+		throw new Error(
+			`Emulator Host "${raw}" looks like an IPv6 address, which the Pub/Sub client does not support. Use a hostname or IPv4 address.`,
+		);
+	}
+	const match = /^([^\s:/?#@]+)(?::(\d{1,5}))?$/.exec(stripped);
+	const port = match?.[2] ? Number(match[2]) : DEFAULT_EMULATOR_PORT;
+	if (!match || port < 1 || port > 65535) {
+		throw new Error(`Emulator Host "${raw}" must be in the form host:port (e.g. localhost:8085)`);
+	}
+	return { host: match[1], port, authority: `${match[1]}:${port}` };
+}
+
 /**
  * Builds a stub AuthClient that forwards `.request()` to gaxios unauthenticated.
  * Used only when the credential targets the Pub/Sub emulator (which does not
@@ -235,15 +286,13 @@ export async function buildPubSubAuth(
 	const apiEndpoint = normaliseApiEndpoint(credentials.apiEndpoint);
 
 	if (useEmulator) {
-		const emulatorHost = normaliseApiEndpoint(credentials.emulatorHost) ?? 'localhost:8085';
-		const [host, portStr] = emulatorHost.split(':');
-		const port = portStr ? Number(portStr) : 8085;
+		const { host, port, authority } = parseEmulatorHost(credentials.emulatorHost);
 		const projectId =
 			projectIdOverride ?? trimOrUndefined(credentials.projectId) ?? EMULATOR_DEFAULT_PROJECT;
 		const pubsub = new PubSub({
 			projectId,
 			emulatorMode: true,
-			apiEndpoint: emulatorHost,
+			apiEndpoint: authority,
 			servicePath: host,
 			port,
 		});
@@ -251,7 +300,7 @@ export async function buildPubSubAuth(
 			authClient: buildEmulatorAuthClient(),
 			pubsub,
 			projectId,
-			restApiBase: `http://${emulatorHost}/v1`,
+			restApiBase: `http://${authority}/v1`,
 		};
 	}
 

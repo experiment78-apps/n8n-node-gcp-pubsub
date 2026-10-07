@@ -22,10 +22,10 @@ import {
 
 type Operation = 'ack' | 'nack' | 'extendDeadline';
 
-interface BatchKey {
-	subscription: string;
-	deadline: number | null;
-}
+// Pub/Sub caps acknowledge / modifyAckDeadline requests at 512 KiB. ackIds run
+// to a couple of hundred bytes, so 1000 per call stays well inside that.
+const MAX_ACK_IDS_PER_REQUEST = 1000;
+const MAX_ACK_DEADLINE_SECONDS = 600;
 
 export class GcpPubSubActionV1 implements INodeType {
 	description: INodeTypeDescription = {
@@ -161,7 +161,7 @@ export class GcpPubSubActionV1 implements INodeType {
 				displayName: 'Ack Deadline (Seconds)',
 				name: 'ackDeadlineSeconds',
 				type: 'number',
-				typeOptions: { minValue: 0, maxValue: 600 },
+				typeOptions: { minValue: 0, maxValue: MAX_ACK_DEADLINE_SECONDS },
 				default: 60,
 				description: 'New ack deadline in seconds (0-600). Only used for Extend Ack Deadline.',
 				displayOptions: {
@@ -191,7 +191,7 @@ export class GcpPubSubActionV1 implements INodeType {
 						type: 'boolean',
 						default: true,
 						description:
-							'Whether to group items sharing the same subscription (and deadline for Extend Ack Deadline) into a single API call',
+							'Whether to group items sharing the same subscription (and deadline for Extend Ack Deadline) into shared API calls of up to 1000 messages',
 					},
 				],
 			},
@@ -280,10 +280,15 @@ export class GcpPubSubActionV1 implements INodeType {
 				let deadline: number | null = null;
 				if (operation === 'extendDeadline') {
 					deadline = this.getNodeParameter('ackDeadlineSeconds', i, 60) as number;
-					if (typeof deadline !== 'number' || Number.isNaN(deadline)) {
+					if (
+						typeof deadline !== 'number' ||
+						!Number.isInteger(deadline) ||
+						deadline < 0 ||
+						deadline > MAX_ACK_DEADLINE_SECONDS
+					) {
 						throw new NodeOperationError(
 							this.getNode(),
-							'ackDeadlineSeconds must be a number between 0 and 600',
+							'ackDeadlineSeconds must be a whole number between 0 and 600',
 							{ itemIndex: i },
 						);
 					}
@@ -311,18 +316,20 @@ export class GcpPubSubActionV1 implements INodeType {
 
 		const groups = new Map<string, ItemPlan[]>();
 		for (const plan of plans) {
-			if (!plan.ackId) continue;
-			const key: BatchKey = {
-				subscription: plan.subscription,
-				deadline: batchRequests ? plan.deadline : Number.MIN_SAFE_INTEGER + plan.index,
-			};
-			const groupKey = `${key.subscription}|${key.deadline}|${batchRequests ? '' : plan.index}`;
+			const groupKey = batchRequests ? `${plan.subscription}|${plan.deadline}` : `${plan.index}`;
 			const existing = groups.get(groupKey) ?? [];
 			existing.push(plan);
 			groups.set(groupKey, existing);
 		}
 
+		const batches: ItemPlan[][] = [];
 		for (const group of groups.values()) {
+			for (let start = 0; start < group.length; start += MAX_ACK_IDS_PER_REQUEST) {
+				batches.push(group.slice(start, start + MAX_ACK_IDS_PER_REQUEST));
+			}
+		}
+
+		for (const group of batches) {
 			const { subscription, deadline } = group[0];
 			const ackIds = group.map((p) => p.ackId);
 			let result: AcknowledgeResult;

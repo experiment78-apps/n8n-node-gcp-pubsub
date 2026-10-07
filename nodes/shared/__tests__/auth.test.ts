@@ -94,7 +94,9 @@ import {
 	buildPubSubAuth,
 	formatPrivateKey,
 	normaliseApiEndpoint,
+	parseEmulatorHost,
 	parseServiceAccountJson,
+	projectIdFromServiceAccountEmail,
 	restBaseForApiEndpoint,
 	type CredentialLoader,
 } from '../auth';
@@ -225,6 +227,110 @@ describe('buildPubSubAuth emulator mode', () => {
 		const loader = credentialLoaderFor({ useEmulator: true, projectId: 'cred-proj' });
 		const bundle = await buildPubSubAuth(loader, { authentication: 'serviceAccount' });
 		expect(bundle.projectId).toBe('cred-proj');
+	});
+});
+
+describe('parseEmulatorHost', () => {
+	it.each([
+		[undefined, 'localhost', 8085],
+		['', 'localhost', 8085],
+		['localhost', 'localhost', 8085],
+		['emulator:9000', 'emulator', 9000],
+		['http://localhost:8085/', 'localhost', 8085],
+		[' 10.0.0.5:80 ', '10.0.0.5', 80],
+	])('parses %j', (input, host, port) => {
+		expect(parseEmulatorHost(input)).toEqual({ host, port, authority: `${host}:${port}` });
+	});
+
+	it.each(['[::1]:8085', '::1', 'host:port', 'host:0', 'host:70000', 'host:8085/path', 'a b'])(
+		'rejects %j',
+		(input) => {
+			expect(() => parseEmulatorHost(input)).toThrow('Emulator Host');
+		},
+	);
+});
+
+describe('buildPubSubAuth emulator address', () => {
+	it('uses the same host and port for gRPC and REST when the port is omitted', async () => {
+		const bundle = await buildPubSubAuth(
+			credentialLoaderFor({ useEmulator: true, emulatorHost: 'emulator' }),
+			{ authentication: 'serviceAccount' },
+		);
+		expect(bundle.restApiBase).toBe('http://emulator:8085/v1');
+		expect((bundle.pubsub as unknown as { options: unknown }).options).toMatchObject({
+			apiEndpoint: 'emulator:8085',
+			servicePath: 'emulator',
+			port: 8085,
+			emulatorMode: true,
+		});
+	});
+});
+
+describe('projectIdFromServiceAccountEmail', () => {
+	it('reads the project from a user-managed service account', () => {
+		expect(projectIdFromServiceAccountEmail('n8n@my-project-1.iam.gserviceaccount.com')).toBe(
+			'my-project-1',
+		);
+	});
+
+	it.each([
+		undefined,
+		'123-compute@developer.gserviceaccount.com',
+		'proj@appspot.gserviceaccount.com',
+		'user@example.com',
+	])('returns undefined for %j', (email) => {
+		expect(projectIdFromServiceAccountEmail(email)).toBeUndefined();
+	});
+});
+
+describe('buildPubSubAuth project resolution', () => {
+	const key = { privateKey: '-----BEGIN KEY-----\\nabc' };
+
+	it('infers the project from the service account email', async () => {
+		const bundle = await buildPubSubAuth(
+			credentialLoaderFor({
+				authType: 'serviceAccountKey',
+				email: 'sa@key-project.iam.gserviceaccount.com',
+				...key,
+			}),
+			{ authentication: 'serviceAccount' },
+		);
+		expect(bundle.projectId).toBe('key-project');
+	});
+
+	it('prefers project_id from pasted JSON', async () => {
+		const bundle = await buildPubSubAuth(
+			credentialLoaderFor({
+				authType: 'serviceAccountJson',
+				serviceAccountJson: JSON.stringify({
+					client_email: 'sa@email-project.iam.gserviceaccount.com',
+					private_key: 'key',
+					project_id: 'json-project',
+				}),
+			}),
+			{ authentication: 'serviceAccount' },
+		);
+		expect(bundle.projectId).toBe('json-project');
+	});
+
+	it('never falls back to the ambient project for a pasted key', async () => {
+		await expect(
+			buildPubSubAuth(
+				credentialLoaderFor({
+					authType: 'serviceAccountKey',
+					email: '123-compute@developer.gserviceaccount.com',
+					...key,
+				}),
+				{ authentication: 'serviceAccount' },
+			),
+		).rejects.toThrow('could not be determined from the service account');
+	});
+
+	it('still uses the ambient project for Application Default Credentials', async () => {
+		const bundle = await buildPubSubAuth(credentialLoaderFor({ authType: 'applicationDefault' }), {
+			authentication: 'serviceAccount',
+		});
+		expect(bundle.projectId).toBe('adc-project');
 	});
 });
 

@@ -11,7 +11,7 @@ export class GcpPubSubTrigger extends VersionedNodeType {
 			icon: 'file:gcpPubSub.svg',
 			group: ['trigger'],
 			description:
-				'Starts a workflow when a message is received on a Google Cloud Pub/Sub topic',
+				'Starts a workflow when a message arrives on a Google Cloud Pub/Sub subscription',
 			defaultVersion: 1,
 		};
 

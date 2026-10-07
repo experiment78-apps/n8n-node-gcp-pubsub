@@ -93,7 +93,7 @@ export class GcpPubSubApi implements ICredentialType {
 			type: 'string',
 			default: '',
 			description:
-				'Default Google Cloud project ID. Optional when using Service Account JSON (inferred from project_id) or Application Default Credentials (inferred from the environment). Can be overridden per node.',
+				'Default Google Cloud project ID. If blank it is inferred from the service account (the JSON project_id, or the project in a name@project.iam.gserviceaccount.com email) or, for Application Default Credentials, from the environment. Can be overridden per node.',
 		},
 		{
 			displayName: 'API Endpoint (Regional)',
@@ -117,7 +117,8 @@ export class GcpPubSubApi implements ICredentialType {
 			name: 'emulatorHost',
 			type: 'string',
 			default: 'localhost:8085',
-			description: 'host:port the Pub/Sub emulator is listening on.',
+			description:
+				'host:port the Pub/Sub emulator is listening on. The port defaults to 8085. IPv6 addresses are not supported.',
 			displayOptions: {
 				show: {
 					useEmulator: [true],

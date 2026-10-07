@@ -1,5 +1,5 @@
 {
-	"node": "n8n-nodes-gcp-pubsub-action",
+	"node": "n8n-nodes-gcp-pubsub-x78",
 	"nodeVersion": "1.0",
 	"codexVersion": "1.0",
 	"categories": ["Development", "Developer Tools"],

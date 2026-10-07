@@ -53,6 +53,10 @@
 #
 # This will lint, build, prompt for a version bump, update the changelog,
 # commit, tag, and push — which triggers this workflow to publish to npm.
+#
+# This is the only publishing workflow. Do not add a second one that calls
+# `npm publish` directly: the package's prepublishOnly hook rejects any publish
+# that does not go through `npm run release`.
 
 name: Publish
 
@@ -85,6 +89,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Test
+        run: npm test -- --ci
 
       - name: Release
         # Publishes to npm with a provenance attestation (requires id-token: write above).

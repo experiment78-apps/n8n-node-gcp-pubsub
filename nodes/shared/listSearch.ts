@@ -1,7 +1,23 @@
-import type { Topic, Subscription } from '@google-cloud/pubsub';
+import type { PubSub } from '@google-cloud/pubsub';
 import type { ILoadOptionsFunctions, INodeListSearchResult } from 'n8n-workflow';
+import { NodeOperationError } from 'n8n-workflow';
 
 import { buildPubSubAuth, type Authentication } from './auth';
+
+const PAGE_SIZE = 50;
+// A filtered search scans the project in larger pages until it has a full page
+// of matches, bounded so one keystroke cannot walk an unbounded listing.
+const FILTER_PAGE_SIZE = 500;
+const MAX_FILTER_PAGES = 20;
+const PERMISSION_DENIED_CODE = 7;
+
+type ResourceKind = 'topics' | 'subscriptions';
+
+interface PageOptions {
+	pageSize: number;
+	pageToken?: string;
+	autoPaginate: false;
+}
 
 function shortName(fullName: string | null | undefined): string {
 	if (!fullName) return '';
@@ -28,10 +44,62 @@ function extractNextPageToken(apiResponse: unknown): string | undefined {
 	return undefined;
 }
 
-function applyFilter<T extends { name: string }>(items: T[], filter: string | undefined): T[] {
+async function fetchPage(
+	pubsub: PubSub,
+	kind: ResourceKind,
+	options: PageOptions,
+): Promise<{ names: string[]; nextPageToken?: string }> {
+	const [resources, , apiResponse] = (await (kind === 'topics'
+		? pubsub.getTopics(options)
+		: pubsub.getSubscriptions(options))) as [Array<{ name?: string | null }>, unknown, unknown];
+	return {
+		names: resources.map((r) => shortName(r.name)),
+		nextPageToken: extractNextPageToken(apiResponse),
+	};
+}
+
+async function searchResources(
+	ctx: ILoadOptionsFunctions,
+	kind: ResourceKind,
+	filter?: string,
+	paginationToken?: string,
+): Promise<INodeListSearchResult> {
+	const authentication = readAuthentication(ctx);
+	const projectIdOverride = readProjectIdOverride(ctx);
 	const needle = filter?.trim().toLowerCase();
-	if (!needle) return items;
-	return items.filter((i) => i.name.toLowerCase().includes(needle));
+
+	const { pubsub } = await buildPubSubAuth(ctx, { authentication, projectIdOverride });
+	try {
+		const results: INodeListSearchResult['results'] = [];
+		let pageToken = paginationToken;
+		let pages = 0;
+		do {
+			const page = await fetchPage(pubsub, kind, {
+				pageSize: needle ? FILTER_PAGE_SIZE : PAGE_SIZE,
+				pageToken,
+				autoPaginate: false,
+			});
+			for (const name of page.names) {
+				if (!needle || name.toLowerCase().includes(needle)) {
+					results.push({ name, value: name });
+				}
+			}
+			pageToken = page.nextPageToken;
+			pages++;
+		} while (needle && pageToken && results.length < PAGE_SIZE && pages < MAX_FILTER_PAGES);
+
+		return { results, paginationToken: pageToken };
+	} catch (error) {
+		if ((error as { code?: unknown } | null)?.code === PERMISSION_DENIED_CODE) {
+			throw new NodeOperationError(
+				ctx.getNode(),
+				`The credential is not allowed to list ${kind} (pubsub.${kind}.list). Switch the field to "By Name" and type the name, or grant roles/pubsub.viewer.`,
+			);
+		}
+		throw error;
+	} finally {
+		await pubsub.close().catch(() => undefined);
+	}
 }
 
 export async function searchTopics(
@@ -39,28 +107,7 @@ export async function searchTopics(
 	filter?: string,
 	paginationToken?: string,
 ): Promise<INodeListSearchResult> {
-	const authentication = readAuthentication(this);
-	const projectIdOverride = readProjectIdOverride(this);
-
-	const { pubsub } = await buildPubSubAuth(this, { authentication, projectIdOverride });
-	try {
-		const [topics, , apiResponse] = (await pubsub.getTopics({
-			pageSize: 50,
-			pageToken: paginationToken,
-			autoPaginate: false,
-		})) as [Topic[], unknown, unknown];
-
-		const items = topics.map((t) => {
-			const short = shortName(t.name);
-			return { name: short, value: short };
-		});
-		return {
-			results: applyFilter(items, filter),
-			paginationToken: extractNextPageToken(apiResponse),
-		};
-	} finally {
-		await pubsub.close().catch(() => undefined);
-	}
+	return await searchResources(this, 'topics', filter, paginationToken);
 }
 
 export async function searchSubscriptions(
@@ -68,26 +115,5 @@ export async function searchSubscriptions(
 	filter?: string,
 	paginationToken?: string,
 ): Promise<INodeListSearchResult> {
-	const authentication = readAuthentication(this);
-	const projectIdOverride = readProjectIdOverride(this);
-
-	const { pubsub } = await buildPubSubAuth(this, { authentication, projectIdOverride });
-	try {
-		const [subs, , apiResponse] = (await pubsub.getSubscriptions({
-			pageSize: 50,
-			pageToken: paginationToken,
-			autoPaginate: false,
-		})) as [Subscription[], unknown, unknown];
-
-		const items = subs.map((s) => {
-			const short = shortName(s.name);
-			return { name: short, value: short };
-		});
-		return {
-			results: applyFilter(items, filter),
-			paginationToken: extractNextPageToken(apiResponse),
-		};
-	} finally {
-		await pubsub.close().catch(() => undefined);
-	}
+	return await searchResources(this, 'subscriptions', filter, paginationToken);
 }
